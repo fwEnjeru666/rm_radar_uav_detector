@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Arguments -->
+    <arg name="cloud_topic" default="/livox/lidar"/>
+    <arg name="frame_id" default="livox_frame"/>
+    <arg name="nodelet_manager" default="lidar_detector_manager"/>
+    
+    <!-- 参数文件路径 (默认加载 default_params.yaml) -->
+    <arg name="params_file" default="$(find rm_radar_lidar_detector)/cfg/default_params.yaml"/>
+    
+    <!-- Filter parameters -->
+    <arg name="voxel_leaf_size" default="0.1"/>
+    <arg name="pass_x_min" default="0.0"/>
+    <arg name="pass_x_max" default="35.0"/>
+    <arg name="pass_y_min" default="-10.0"/>
+    <arg name="pass_y_max" default="8.0"/>
+    <arg name="pass_z_min" default="-50.0"/>
+    <arg name="pass_z_max" default="7.0"/>
+    <arg name="radius_search" default="0.5"/>
+    <arg name="min_neighbors" default="5"/>
+    <arg name="distance_threshold" default="0.3"/>
+    <arg name="ransac_distance_threshold" default="0.5"/>
+    <arg name="aircraft_min_z" default="-3.0"/>
+    
+    <!-- Clustering parameters -->
+    <arg name="eps" default="0.5"/>
+    <arg name="minPts" default="5"/>
+    
+    <!-- Cluster filtering parameters -->
+    <arg name="max_volume" default="10.0"/>
+    <arg name="min_volume" default="0.1"/>
+    <arg name="max_ratio" default="10.0"/>
+    <arg name="min_ratio" default="0.1"/>
+    <arg name="expansion_m" default="0.5"/>
+    
+    <!-- Queue parameters -->
+    <arg name="cloud_queue_size" default="10"/>
+    <arg name="frame_gap" default="4"/>
+    
+    <!-- Detection mode: 0=Dynamic (fast), 1=Direct -->
+    <arg name="detection_mode" default="0"/>
+    
+    <!-- 在节点启动前加载参数文件 (标准YAML格式) -->
+    <rosparam command="load" file="$(arg params_file)" ns="lidar_detector" />
+
+    <!-- Nodelet manager (always needed) -->
+    <node pkg="nodelet" type="nodelet" name="$(arg nodelet_manager)" args="manager" output="screen"/>
+    
+    <!-- Lidar detector nodelet -->
+    <node pkg="nodelet" type="nodelet" name="lidar_detector"
+          args="load rm_radar_lidar_detector/LidarDetector $(arg nodelet_manager)" output="screen">
+        <param name="cloud_topic" value="$(arg cloud_topic)"/>
+        <param name="frame_id" value="$(arg frame_id)"/>
+    </node>
+
+    <!-- Use simulation time for rosbag playback -->
+    <param name="/use_sim_time" value="true"/>
+    
+    <!-- Static transform: map -> livox_frame -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="map_to_livox"
+          args="0 0 0 0 0 0 map livox_frame" />
+
+    <!-- XYZ坐标轴可视化-->
+    <node pkg="rm_radar_lidar_detector" type="axis_visualizer.py" name="axis_visualizer" output="screen">
+        <param name="frame_id" value="$(arg frame_id)"/>
+        <param name="x_min" value="$(arg pass_x_min)"/>
+        <param name="x_max" value="$(arg pass_x_max)"/>
+        <param name="y_min" value="$(arg pass_y_min)"/>
+        <param name="y_max" value="$(arg pass_y_max)"/>
+        <param name="z_min" value="$(arg pass_z_min)"/>
+        <param name="z_max" value="$(arg pass_z_max)"/>
+        <param name="tick_interval" value="5.0"/>
+    </node>
+
+    <!-- RViz visualization -->
+    <node pkg="rviz" type="rviz" name="rviz" output="screen"
+          args="-d $(find rm_radar_lidar_detector)/cfg/lidar.rviz" />
+
+    <!-- Rosbag playback -->
+    <node pkg="rosbag" type="play" name="play_bag" output="screen"
+          args="--clock -l /home/enjeru/airbag.bag"/>
+</launch>

@@ -1,0 +1,8 @@
+<library path="lib/librm_radar_img_proc">
+    <class
+            name="rm_radar_img_proc/Processor"
+            type="rm_radarplugin::Processor"
+            base_class_type="nodelet::Nodelet">
+    <description>radar img plugin.</description>
+    </class>
+</library>

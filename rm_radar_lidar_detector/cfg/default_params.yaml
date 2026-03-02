@@ -1,0 +1,27 @@
+# LiDAR Detector 参数配置文件 (标准YAML格式)
+# 保存参数: rosparam dump $(rospack find rm_radar_lidar_detector)/cfg/default_params.yaml /lidar_detector
+# 加载参数: rosparam load $(rospack find rm_radar_lidar_detector)/cfg/default_params.yaml /lidar_detector
+
+aircraft_min_z: -3.0
+cloud_topic: /livox/lidar
+detection_mode: 1
+distance_threshold: 0.3992
+eps: 0.5
+expansion_m: 0.5
+frame_id: livox_frame
+max_ratio: 12.87
+max_volume: 10.0
+minPts: 5
+min_neighbors: 5
+min_ratio: 0.792
+min_volume: 0.1
+pass_x_max: 35.0
+pass_x_min: 12.0
+pass_y_max: -2.0
+pass_y_min: -12.0
+pass_z_max: 6.0
+pass_z_min: -50.0
+radius_search: 0.5
+ransac_distance_threshold: 0.6965
+voxel_leaf_size: 0.1
+

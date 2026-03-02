@@ -1,0 +1,9 @@
+<library path="lib/librm_radar_lidar_detector">
+  <class name="rm_radar_lidar_detector/LidarDetector" 
+         type="rm_radar_lidar_detector::LidarDetector" 
+         base_class_type="nodelet::Nodelet">
+    <description>
+      Lidar-based dynamic object detector nodelet for radar applications.
+    </description>
+  </class>
+</library>

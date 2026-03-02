@@ -1,0 +1,5 @@
+<library path="lib/librm_track">
+  <class name="rm_track/Tracker" type="rm_radarplugin::Tracker" base_class_type="nodelet::Nodelet">
+    <description>Radar Tracker Nodelet</description>
+  </class>
+</library>
