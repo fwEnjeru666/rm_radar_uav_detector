@@ -259,10 +259,13 @@ namespace rm_radarplugin
             return;
         }
 
-        // Process the first detection (or the one closest to image center)
-        // For now, just process the first one
-        const auto& detection = detections->detections[0];
-        processSingleDetection(detection);
+        // 选择离图像中心最近的检测
+        const auto& best = *std::min_element(
+            detections->detections.begin(), detections->detections.end(),
+            [](const rm_radar_msgs::DroneDetection& a, const rm_radar_msgs::DroneDetection& b) {
+                return a.distance_to_image_center < b.distance_to_image_center;
+            });
+        processSingleDetection(best);
     }
 
     void PoseSolver::processSingleDetection(const rm_radar_msgs::DroneDetection& detection)

@@ -12,6 +12,7 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <algorithm>
 #include <ros/ros.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/transform_broadcaster.h>
