@@ -31,12 +31,14 @@ namespace rm_radarplugin
         bool isInitialized() const { return ukf_initialized_; }
         void setMeasurementNoise(const Eigen::MatrixXd& R) { R_ = R; }
         Eigen::MatrixXd getMeasurementNoise() const { return R_; }
+        Eigen::MatrixXd getBaseMeasurementNoise() const { return R_base_; }
 
     private:
         Eigen::VectorXd state_;  // State vector
         Eigen::MatrixXd P_;      // State covariance matrix
         Eigen::MatrixXd Q_;      // Process noise covariance matrix
-        Eigen::MatrixXd R_;      // Measurement noise covariance matrix
+        Eigen::MatrixXd R_;      // Measurement noise covariance matrix (per-frame, may be scaled)
+        Eigen::MatrixXd R_base_; // Base measurement noise from dynamic_reconfigure
 
         Eigen::MatrixXd Xsig_; // Sigma points matrix
         Eigen::MatrixXd Xsig_pred_; // Predicted sigma points matrix

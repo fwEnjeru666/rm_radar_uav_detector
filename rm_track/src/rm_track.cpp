@@ -235,26 +235,34 @@ namespace rm_radarplugin
         // 4. 调整滤波信任度
         if (has_data && ukf_.isInitialized()) 
         {
+            Eigen::MatrixXd R_base = ukf_.getBaseMeasurementNoise();
             Eigen::Matrix3d R_matrix = Eigen::Matrix3d::Zero();
             
             if (is_vision_active) 
             {
-                R_matrix(0,0) = 0.02;  // X 极度信任
-                R_matrix(1,1) = 0.02;  // Y 极度信任
-                R_matrix(2,2) = 0.05;   // Z 勉强信任
+                // 视觉模式: 信任XY，不信任Z
+                R_matrix(0,0) = R_base(0,0) * 1.0;   // XY 缩小噪声 → 更信任
+                R_matrix(1,1) = R_base(1,1) * 1.0;
+                R_matrix(2,2) = R_base(2,2) * 10.0;   // Z 放大噪声 → 不信任
             } 
             else 
             {
-                R_matrix(0,0) = 3.0;   // X 不太信任，依赖 UKF 预测
-                R_matrix(1,1) = 3.0;   // Y 不太信任，依赖 UKF 预测
-                R_matrix(2,2) = 0.01;  // Z 极度信任
+                // LiDAR模式: 信任Z，不信任XY
+                R_matrix(0,0) = R_base(0,0) * 5.0;   // XY 放大噪声 → 不信任
+                R_matrix(1,1) = R_base(1,1) * 5.0;
+                R_matrix(2,2) = R_base(2,2) * 0.1;   // Z 缩小噪声 → 更信任
             }
             
             ukf_.setMeasurementNoise(R_matrix);
+            
+            ROS_DEBUG_THROTTLE(1, "[Tracker] R adjusted: diag(%.4f, %.4f, %.4f) src=%s",
+                R_matrix(0,0), R_matrix(1,1), R_matrix(2,2),
+                is_vision_active ? "VISION" : "LIDAR");
         }
 
         // 5. 驱动状态机
-        if (!has_data) {
+        if (!has_data) 
+        {
             current_time_ = now; // 没有数据时，以当前时间进行推演
         }
         processTracking(has_data, z_meas, dt);

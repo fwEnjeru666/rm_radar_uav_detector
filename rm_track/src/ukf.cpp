@@ -55,6 +55,7 @@ namespace rm_radarplugin
         Q_ = Eigen::MatrixXd::Identity(state_dim_, state_dim_) * 0.01;
         meas_dim_ = 3;  // Default measurement dimension (x, y, z)
         R_ = Eigen::MatrixXd::Identity(meas_dim_, meas_dim_) * 0.1;
+        R_base_ = R_;  // 基础R矩阵初始化
 
         // 2. 设置 ukf_initialized_ 为 true
         ukf_initialized_ = true;
@@ -244,6 +245,9 @@ namespace rm_radarplugin
         {
             R_(3, 3) = r_yaw_;
         }
+        
+        // 保存基础R矩阵，供Tracker自适应缩放使用
+        R_base_ = R_;
         
         ROS_INFO("UKF Q/R matrices updated. Q diag: [%.4f, %.4f, %.4f, ...], R diag: [%.4f, %.4f, %.4f]",
                           Q_(0,0), Q_(1,1), Q_(2,2), R_(0,0), R_(1,1), meas_dim_ > 2 ? R_(2,2) : 0.0);
