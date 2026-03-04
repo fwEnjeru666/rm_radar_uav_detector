@@ -137,6 +137,7 @@ include_directories(
 add_library(${PROJECT_NAME}
   src/rm_track.cpp
   src/ukf.cpp
+  src/aimm.cpp
   src/decision_maker.cpp
   src/pose_solver.cpp
 )

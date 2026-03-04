@@ -20,8 +20,22 @@ namespace rm_radarplugin
         nh_ = ros::NodeHandle(nh, "radar_track");
         ROS_INFO("radar track initialized");
 
+        // Read AIMM switch from parameter server (can also be toggled via dynamic_reconfigure)
+        use_aimm_ = nh_.param("use_aimm", false);
+
         ukf_ = rm_radarplugin::UKF(nh_);
         ukf_.initDynamicReconfigure();  // 初始化 dynamic_reconfigure server
+
+        if (use_aimm_)
+        {
+            aimm_ = rm_radarplugin::AIMM(nh_);
+            aimm_.initDynamicReconfigure();
+            ROS_INFO("[Tracker] Using AIMM (Adaptive Interacting Multiple Model) estimator");
+        }
+        else
+        {
+            ROS_INFO("[Tracker] Using single UKF estimator");
+        }
         
         // 订阅 PoseSolver 输出的带有3D位姿的检测消息
         detection_sub_ = nh_.subscribe("/pose_solver/solved_pose", 10, &Tracker::camDetectionCB, this);
@@ -59,7 +73,27 @@ namespace rm_radarplugin
         hit_threshold_ = config.hit_threshold;
         max_lost_count_ = config.max_lost_count;
         debug_mode_ = config.debug_mode;
-        ROS_INFO("Reconfigure Request: hit_threshold=%d, max_lost_count=%d, debug_mode=%d", hit_threshold_, max_lost_count_, debug_mode_);
+
+        // Handle AIMM toggle at runtime
+        bool new_use_aimm = config.use_aimm;
+        if (new_use_aimm != use_aimm_)
+        {
+            use_aimm_ = new_use_aimm;
+            if (use_aimm_ && !aimm_.isInitialized())
+            {
+                aimm_ = rm_radarplugin::AIMM(nh_);
+                aimm_.initDynamicReconfigure();
+            }
+            // Force re-detection so the new estimator gets initialized cleanly
+            track_state_ = rm_track::LOST;
+            is_tracking_ = false;
+            q_track_valid_ = false;
+            ROS_INFO("[Tracker] Switched estimator to %s — resetting to LOST state",
+                     use_aimm_ ? "AIMM" : "UKF");
+        }
+
+        ROS_INFO("Reconfigure Request: hit_threshold=%d, max_lost_count=%d, debug_mode=%d, use_aimm=%d",
+                 hit_threshold_, max_lost_count_, debug_mode_, use_aimm_);
     }
 
     void Tracker::lidarDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection)
@@ -233,9 +267,9 @@ namespace rm_radarplugin
         }
 
         // 4. 调整滤波信任度
-        if (has_data && ukf_.isInitialized()) 
+        if (has_data && filterIsInitialized()) 
         {
-            Eigen::MatrixXd R_base = ukf_.getBaseMeasurementNoise();
+            Eigen::MatrixXd R_base = filterGetBaseMeasurementNoise();
             Eigen::Matrix3d R_matrix = Eigen::Matrix3d::Zero();
             
             if (is_vision_active) 
@@ -253,7 +287,7 @@ namespace rm_radarplugin
                 R_matrix(2,2) = R_base(2,2) * 0.1;   // Z 缩小噪声 → 更信任
             }
             
-            ukf_.setMeasurementNoise(R_matrix);
+            filterSetMeasurementNoise(R_matrix);
             
             ROS_DEBUG_THROTTLE(1, "[Tracker] R adjusted: diag(%.4f, %.4f, %.4f) src=%s",
                 R_matrix(0,0), R_matrix(1,1), R_matrix(2,2),
@@ -327,6 +361,65 @@ namespace rm_radarplugin
         ukf_.initialize(x0, P0);
     }
 
+    // ============================================================
+    // init_aimm: initialize the AIMM estimator with first measurement
+    // ============================================================
+    void Tracker::init_aimm(const Eigen::Vector3d& z_meas)
+    {
+        aimm_.initialize(z_meas);
+        ROS_INFO("[Tracker] AIMM initialized at (%.3f, %.3f, %.3f)", z_meas.x(), z_meas.y(), z_meas.z());
+    }
+
+    // ============================================================
+    // Unified filter interface — dispatches to UKF or AIMM
+    // ============================================================
+    bool Tracker::filterIsInitialized() const
+    {
+        return use_aimm_ ? aimm_.isInitialized() : ukf_.isInitialized();
+    }
+
+    void Tracker::filterSetDt(double dt)
+    {
+        if (use_aimm_)
+            aimm_.setDt(dt);
+        else
+            ukf_.setDt(dt);
+    }
+
+    void Tracker::filterPredict()
+    {
+        if (use_aimm_)
+            aimm_.predict();
+        else
+            ukf_.predict();
+    }
+
+    void Tracker::filterUpdate(const Eigen::Vector3d& z_meas)
+    {
+        if (use_aimm_)
+            aimm_.update(z_meas);
+        else
+            ukf_.update(z_meas);
+    }
+
+    Eigen::VectorXd Tracker::filterGetState() const
+    {
+        return use_aimm_ ? aimm_.getState() : ukf_.getState();
+    }
+
+    Eigen::MatrixXd Tracker::filterGetBaseMeasurementNoise() const
+    {
+        return use_aimm_ ? aimm_.getBaseMeasurementNoise() : ukf_.getBaseMeasurementNoise();
+    }
+
+    void Tracker::filterSetMeasurementNoise(const Eigen::MatrixXd& R)
+    {
+        if (use_aimm_)
+            aimm_.setMeasurementNoise(R);
+        else
+            ukf_.setMeasurementNoise(R);
+    }
+
 //state handling......................................
     void Tracker::handleDetectingState(bool has_data, const Eigen::Vector3d& z_meas, double dt)
     {
@@ -334,9 +427,9 @@ namespace rm_radarplugin
         {
             detect_fail_count_ = 0;  
             detected_count_ ++;
-            ukf_.setDt(dt);
-            ukf_.predict();
-            ukf_.update(z_meas);
+            filterSetDt(dt);
+            filterPredict();
+            filterUpdate(z_meas);
             ROS_INFO("[Tracker] STATE: DETECTING, count=%d/%d", detected_count_, hit_threshold_);
             if(detected_count_ > hit_threshold_)
             {
@@ -366,9 +459,9 @@ namespace rm_radarplugin
         if (has_data)
         {
             lost_count_ = 0;
-            ukf_.setDt(dt);
-            ukf_.predict();
-            ukf_.update(z_meas);
+            filterSetDt(dt);
+            filterPredict();
+            filterUpdate(z_meas);
             is_tracking_ = true;
             if(debug_mode_) ROS_INFO("STATE:%d: Tracking with detection.", track_state_);
         }
@@ -386,9 +479,9 @@ namespace rm_radarplugin
         {
             track_state_ = rm_track::TRACKING;
             is_tracking_ = true; 
-            ukf_.setDt(dt);
-            ukf_.predict();
-            ukf_.update(z_meas);
+            filterSetDt(dt);
+            filterPredict();
+            filterUpdate(z_meas);
             if(debug_mode_) ROS_INFO("STATE:%d: Track state changed to TRACKING--detection reacquired.", track_state_);
         }
         else
@@ -403,8 +496,8 @@ namespace rm_radarplugin
             }
             else
             {
-                ukf_.setDt(dt);
-                ukf_.predict();
+                filterSetDt(dt);
+                filterPredict();
                 if(debug_mode_) ROS_INFO("STATE:%d: TEMP_LOST without detection.", track_state_);
             }
         }
@@ -417,8 +510,14 @@ namespace rm_radarplugin
             track_state_ = rm_track::DETECTING;
             detected_count_ = 1;
             detect_fail_count_ = 0;
-            init_ukf(z_meas);
-            ROS_INFO("[Tracker] STATE: LOST -> DETECTING, first detection at (%.3f, %.3f, %.3f)", 
+
+            if (use_aimm_)
+                init_aimm(z_meas);
+            else
+                init_ukf(z_meas);
+
+            ROS_INFO("[Tracker] STATE: LOST -> DETECTING (%s), first detection at (%.3f, %.3f, %.3f)", 
+                use_aimm_ ? "AIMM" : "UKF",
                 z_meas.x(), z_meas.y(), z_meas.z());
         }
         else
@@ -477,12 +576,12 @@ namespace rm_radarplugin
         track_data_msg.rotation.y = q_track_.getY();
         track_data_msg.rotation.z = q_track_.getZ();
 
-        if(!ukf_.isInitialized())
+        if(!filterIsInitialized())
          {
-             ROS_WARN("UKF not initialized, cannot publish track data.");
+             ROS_WARN("Filter not initialized, cannot publish track data.");
              return;
          }
-        Eigen::VectorXd state = ukf_.getState();
+        Eigen::VectorXd state = filterGetState();
 
         track_data_msg.id = track_id_;
         track_data_msg.tracking = is_tracking_;
@@ -497,6 +596,16 @@ namespace rm_radarplugin
             track_data_msg.velocity.z = state(5);
         }
         tracker_pub_.publish(track_data_msg);
+
+        // Log AIMM model info if active
+        if (use_aimm_ && aimm_.isInitialized() && debug_mode_)
+        {
+            Eigen::VectorXd probs = aimm_.getModelProbabilities();
+            ROS_INFO_THROTTLE(1, "[Tracker] AIMM probs: CV=%.1f%% CA=%.1f%% CTRV=%.1f%% | Active: %s | λ=%.2f",
+                              probs(0)*100, probs(1)*100, probs(2)*100,
+                              aimm_.getActiveModelName().c_str(),
+                              aimm_.getManeuverIndicator());
+        }
 
         //broadcast tf  
         if (q_track_valid_) {

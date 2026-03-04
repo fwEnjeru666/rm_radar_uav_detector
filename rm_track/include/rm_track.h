@@ -19,6 +19,7 @@
 #include <pose_solver.h>
 
 #include "ukf.h"
+#include "aimm.h"
 #include "common.h"
 
 namespace rm_radarplugin
@@ -61,6 +62,21 @@ namespace rm_radarplugin
         //ukf
         UKF ukf_;
         void init_ukf(const Eigen::Vector3d& z_meas);
+
+        // AIMM (Adaptive Interacting Multiple Model)
+        AIMM aimm_;
+        bool use_aimm_{false};
+        void init_aimm(const Eigen::Vector3d& z_meas);
+
+        // Unified filter interface helpers
+        bool filterInitialized() const;
+        void filterSetDt(double dt);
+        void filterPredict();
+        void filterUpdate(const Eigen::Vector3d& z_meas);
+        Eigen::VectorXd filterGetState() const;
+        Eigen::MatrixXd filterGetBaseMeasurementNoise() const;
+        void filterSetMeasurementNoise(const Eigen::MatrixXd& R);
+        bool filterIsInitialized() const;
 
         //pub
         rm_msgs::TrackData track_data_msg_;

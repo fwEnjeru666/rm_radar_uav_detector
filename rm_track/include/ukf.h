@@ -33,6 +33,20 @@ namespace rm_radarplugin
         Eigen::MatrixXd getMeasurementNoise() const { return R_; }
         Eigen::MatrixXd getBaseMeasurementNoise() const { return R_base_; }
 
+        // Lightweight state injection for AIMM interaction step (no re-init of Q/R/weights)
+        void setState(const Eigen::VectorXd& x, const Eigen::MatrixXd& P) {
+            state_ = x;
+            P_ = P;
+        }
+
+        // Q matrix access for AIMM adaptive scaling
+        Eigen::MatrixXd getProcessNoise() const { return Q_; }
+        void setProcessNoise(const Eigen::MatrixXd& Q) { Q_ = Q; }
+
+        // Access the innovation covariance S_ from last update (for AIMM likelihood)
+        Eigen::MatrixXd getInnovationCovariance() const { return S_; }
+        Eigen::VectorXd getPredictedMeasurement() const { return z_pred_; }
+
     private:
         Eigen::VectorXd state_;  // State vector
         Eigen::MatrixXd P_;      // State covariance matrix
