@@ -100,7 +100,8 @@ namespace rm_radarplugin
     {
         std::lock_guard<std::mutex> lock(lidar_mutex_);
         latest_lidar_detection_ = detection;
-        last_lidar_time_ = ros::Time::now();
+        // Use message stamp (works with sim time / rosbag)
+        last_lidar_time_ = detection->header.stamp;
         
         if (debug_mode_) {
             ROS_INFO_THROTTLE(1, "[Tracker] LiDAR detection: (%.3f, %.3f, %.3f)",
@@ -112,7 +113,8 @@ namespace rm_radarplugin
     {
         std::lock_guard<std::mutex> lock(cam_mutex_);
         latest_cam_detection_ = detection;
-        last_cam_time_ = ros::Time::now();
+        // Use message stamp (works with sim time / rosbag)
+        last_cam_time_ = detection->header.stamp;
 
         if (debug_mode_)
         {       
@@ -170,66 +172,79 @@ namespace rm_radarplugin
 
     void Tracker::detectionCB(const ros::TimerEvent& event)
     {   
+        // Use a time base consistent with incoming messages (important for /use_sim_time / rosbag)
         ros::Time now = ros::Time::now();
-        
-        // 1. 初始化 安全检查
-        if(last_time_.isZero()) {
+
+        rm_radar_msgs::DroneDetection::ConstPtr current_lidar_msg_ = nullptr;
+        rm_radar_msgs::DroneDetection::ConstPtr current_cam_msg_ = nullptr;
+
+        // 1) Grab latest messages (if any)
+        {
+            std::lock_guard<std::mutex> lock(cam_mutex_);
+            if (latest_cam_detection_) {
+                current_cam_msg_ = latest_cam_detection_;
+                latest_cam_detection_ = nullptr;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(lidar_mutex_);
+            if (latest_lidar_detection_) {
+                current_lidar_msg_ = latest_lidar_detection_;
+                latest_lidar_detection_ = nullptr;
+            }
+        }
+
+        // 2) Pick a time reference and apply timeouts based on message stamps, not wall time
+        // Prefer vision stamp if present, else lidar stamp, else wall time.
+        if (current_cam_msg_ && !current_cam_msg_->header.stamp.isZero()) now = current_cam_msg_->header.stamp;
+        else if (current_lidar_msg_ && !current_lidar_msg_->header.stamp.isZero()) now = current_lidar_msg_->header.stamp;
+
+        // init time base
+        if (last_time_.isZero()) {
             last_time_ = now;
             return;
         }
-        
+
         double dt = (now - last_time_).toSec();
         if (dt < 0.001 || dt > 1.0) {
-            last_time_ = now; // 时间跳变太大，跳过本帧
-            return; 
+            last_time_ = now;
+            return;
         }
 
         Eigen::Vector3d z_meas = Eigen::Vector3d::Zero();
         bool has_data = false;
         bool is_vision_active = false;
 
-        rm_radar_msgs::DroneDetection::ConstPtr current_lidar_msg_ = nullptr;
-        rm_radar_msgs::DroneDetection::ConstPtr current_cam_msg_ = nullptr;
-
-        // 2. 优先检查视觉数据
+        // 3) Vision first (apply timeout using header stamps)
+        if (current_cam_msg_ && !last_cam_time_.isZero() &&
+            (now - last_cam_time_).toSec() < vision_timeout_)
         {
-            std::lock_guard<std::mutex> lock(cam_mutex_);
-            if (latest_cam_detection_ && !last_cam_time_.isZero() &&
-                (now - last_cam_time_).toSec() < vision_timeout_) 
-            {
-                current_cam_msg_ = latest_cam_detection_;
-                latest_cam_detection_ = nullptr; 
-            }
-        }
-
-
-        if(current_cam_msg_)
-        {
-            Eigen::Vector3d p_cam(current_cam_msg_->pose.position.x, 
-                                    current_cam_msg_->pose.position.y, 
-                                    current_cam_msg_->pose.position.z);
+            Eigen::Vector3d p_cam(current_cam_msg_->pose.position.x,
+                                  current_cam_msg_->pose.position.y,
+                                  current_cam_msg_->pose.position.z);
             Eigen::Vector3d p_odom;
-            
-            if (p_cam.norm() >= 0.01 && transform2Odom(current_cam_msg_->header, p_cam, p_odom)) 
+
+            if (p_cam.norm() >= 0.01 && transform2Odom(current_cam_msg_->header, p_cam, p_odom))
             {
                 z_meas = p_odom;
                 has_data = true;
                 is_vision_active = true;
                 current_time_ = current_cam_msg_->header.stamp;
+
                 ROS_INFO_THROTTLE(1, "[Tracker] Vision OK: cam(%.2f,%.2f,%.2f) -> odom(%.2f,%.2f,%.2f) state=%d",
                     p_cam.x(), p_cam.y(), p_cam.z(),
                     p_odom.x(), p_odom.y(), p_odom.z(), track_state_);
-                
-                // 更新四元数 (仅在使用视觉时更新)
+
+                // Update quaternion only when using vision
                 tf2::Quaternion q_new(
                     current_cam_msg_->pose.orientation.x, current_cam_msg_->pose.orientation.y,
                     current_cam_msg_->pose.orientation.z, current_cam_msg_->pose.orientation.w);
-                if (q_new.length() > 0.001 && q_new.length() < 2.0) 
+                if (q_new.length() > 0.001 && q_new.length() < 2.0)
                 {
                     q_new.normalize();
                     if (q_track_valid_) {
-                        double dot = q_track_.x() * q_new.x() + q_track_.y() * q_new.y() + 
-                                        q_track_.z() * q_new.z() + q_track_.w() * q_new.w();
+                        double dot = q_track_.x() * q_new.x() + q_track_.y() * q_new.y() +
+                                     q_track_.z() * q_new.z() + q_track_.w() * q_new.w();
                         if (dot < 0) q_new = tf2::Quaternion(-q_new.x(), -q_new.y(), -q_new.z(), -q_new.w());
                     }
                     q_track_ = q_new;
@@ -238,26 +253,16 @@ namespace rm_radarplugin
             }
         }
 
-        // 3. 视觉失效时，使用雷达数据
-        if (!has_data && use_lidar_fusion_) 
+        // 4) LiDAR fallback (apply timeout using header stamps)
+        if (!has_data && use_lidar_fusion_ && current_lidar_msg_ && !last_lidar_time_.isZero() &&
+            (now - last_lidar_time_).toSec() < lidar_timeout_)
         {
-            std::lock_guard<std::mutex> lock(lidar_mutex_);
-            if (latest_lidar_detection_ && !last_lidar_time_.isZero() &&
-                (now - last_lidar_time_).toSec() < lidar_timeout_) 
-            {
-                current_lidar_msg_ = latest_lidar_detection_;
-                latest_lidar_detection_ = nullptr; 
-            }
-        }
-
-        if(current_lidar_msg_)
-        {
-            Eigen::Vector3d p_lidar(current_lidar_msg_->pose.position.x, 
-                        current_lidar_msg_->pose.position.y, 
-                        current_lidar_msg_->pose.position.z);
+            Eigen::Vector3d p_lidar(current_lidar_msg_->pose.position.x,
+                                    current_lidar_msg_->pose.position.y,
+                                    current_lidar_msg_->pose.position.z);
             Eigen::Vector3d p_odom;
-            
-            if (transform2Odom(current_lidar_msg_->header, p_lidar, p_odom)) 
+
+            if (transform2Odom(current_lidar_msg_->header, p_lidar, p_odom))
             {
                 z_meas = p_odom;
                 has_data = true;
@@ -266,7 +271,7 @@ namespace rm_radarplugin
             }
         }
 
-        // 4. 调整滤波信任度
+        // 5) Adjust measurement noise / run state machine (unchanged)
         if (has_data && filterIsInitialized()) 
         {
             Eigen::MatrixXd R_base = filterGetBaseMeasurementNoise();
@@ -431,13 +436,15 @@ namespace rm_radarplugin
             filterPredict();
             filterUpdate(z_meas);
             ROS_INFO("[Tracker] STATE: DETECTING, count=%d/%d", detected_count_, hit_threshold_);
-            if(detected_count_ > hit_threshold_)
-            {
-                track_state_ = rm_track::TRACKING;
-                is_tracking_ = true; 
-                ROS_INFO("[Tracker] STATE: DETECTING -> TRACKING! (detected %d times)", detected_count_);
-                detected_count_ = 0; //reset counter
-            }
+            // Enter TRACKING as soon as we have enough consecutive hits.
+            // Using '>=' avoids requiring an extra frame (off-by-one) which makes tracking feel slow.
+            if(detected_count_ >= hit_threshold_)
+         {
+             track_state_ = rm_track::TRACKING;
+             is_tracking_ = true; 
+             ROS_INFO("[Tracker] STATE: DETECTING -> TRACKING! (detected %d times)", detected_count_);
+             detected_count_ = 0; //reset counter
+         }
         }
         else
         {
@@ -522,7 +529,12 @@ namespace rm_radarplugin
         }
         else
         {
-            ROS_INFO_THROTTLE(2, "[Tracker] STATE: LOST, waiting for valid detection...");
+            ROS_INFO_THROTTLE(3, "[Tracker] STATE: LOST, waiting for valid detection... "
+                              "(cam_sub=%d, lidar_sub=%d, cam_fresh=%d, lidar_fresh=%d)",
+                              (detection_sub_.getNumPublishers() > 0),
+                              (lidar_detection_sub_.getNumPublishers() > 0),
+                              (!last_cam_time_.isZero() && (ros::Time::now() - last_cam_time_).toSec() < vision_timeout_),
+                              (!last_lidar_time_.isZero() && (ros::Time::now() - last_lidar_time_).toSec() < lidar_timeout_));
         }
     }
 
@@ -610,7 +622,16 @@ namespace rm_radarplugin
         //broadcast tf  
         if (q_track_valid_) {
             geometry_msgs::TransformStamped track_tf;
-            track_tf.header.stamp = current_time_;
+            // NOTE:
+            // - TrackData should keep `current_time_` (measurement time) for downstream fusion.
+            // - TF should use `ros::Time::now()` to avoid TF_OLD_DATA / time-jump issues when
+            //   bag timestamps jump or upstream stamps are not monotonic.
+            ros::Time tf_stamp = ros::Time::now();
+            if (tf_stamp.isZero()) {
+                tf_stamp = current_time_;
+            }
+
+            track_tf.header.stamp = tf_stamp;
             track_tf.header.frame_id = target_frame_;
             track_tf.child_frame_id = "tracked_target_" + std::to_string(track_id_);
             track_tf.transform.translation.x = state(0);

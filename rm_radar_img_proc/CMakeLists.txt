@@ -25,6 +25,7 @@ find_package(catkin REQUIRED
         tf2_geometry_msgs
         rm_radar_msgs
         rm_msgs
+        camera_info_manager
         )
 
 
@@ -137,6 +138,8 @@ catkin_package(
         tf2
         tf2_geometry_msgs
         rm_radar_msgs
+        rm_msgs
+        camera_info_manager
 )
 
 ###########
@@ -155,6 +158,11 @@ include_directories(
 add_library(${PROJECT_NAME} 
         src/rm_radar_imgProc.cpp
 )
+
+## Standalone test node: feed image/video into the imgproc pipeline
+add_executable(imgproc_test_node src/imgproc_test_node.cpp)
+add_dependencies(imgproc_test_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(imgproc_test_node ${catkin_LIBRARIES})
 
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries

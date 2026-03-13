@@ -5,6 +5,11 @@
 
 namespace rm_radarplugin
 {
+    // Out-of-class definitions for static constexpr members (required pre-C++17)
+    constexpr int AIMM::NUM_MODELS;
+    constexpr int AIMM::OUTPUT_DIM;
+    constexpr double AIMM::LAMBDA_REF;
+    constexpr double AIMM::LIKELIHOOD_FLOOR;
 
     AIMM::AIMM(ros::NodeHandle& nh)
         : nh_(nh)
@@ -44,7 +49,11 @@ namespace rm_radarplugin
         // Adaptive storage
         Q_base_.resize(NUM_MODELS);
         model_NIS_.resize(NUM_MODELS, 0.0);
-        lambda_ = 0.0;
+        // Initialize λ to the nominal value (ratio = 1.0 means no maneuver)
+        lambda_ = LAMBDA_REF;
+        // NIS baseline 首帧时一步校准，不预设值
+        nis_baseline_ = 0.0;
+        nis_baseline_initialized_ = false;
 
         // Output
         combined_state_ = Eigen::VectorXd::Zero(OUTPUT_DIM);
@@ -115,18 +124,36 @@ namespace rm_radarplugin
             filters_[i].initialize(x0, P0);
 
             // Capture the base Q matrix from dynamic_reconfigure for adaptive scaling
-            Q_base_[i] = filters_[i].getProcessNoise();
+            Q_base_[i] = filters_[i].getBaseProcessNoise();
             model_NIS_[i] = 0.0;
 
-            ROS_INFO("[AIMM] Model %s initialized (state_dim=%d)", 
-                    model_names_[i].c_str(), state_dim);
+            ROS_INFO("[AIMM] Model %s initialized (state_dim=%d, Q_pos=%.6f, R_xy=%.6f)", 
+                    model_names_[i].c_str(), state_dim,
+                    Q_base_[i](0,0),
+                    filters_[i].getMeasurementNoise()(0,0));
+        }
+
+        // Sanity check: warn if Q_pos >> R, which makes NIS perpetually tiny
+        {
+            double q0 = Q_base_[0](0,0);
+            double r0 = filters_[0].getMeasurementNoise()(0,0);
+            double ratio = q0 / std::max(r0, 1e-12);
+            if (ratio > 100.0)
+            {
+                ROS_WARN("[AIMM] Q_pos/R_xy ratio = %.0f — Q is much larger than R. "
+                         "S will be dominated by P (from Q), making NIS perpetually tiny. "
+                         "Consider reducing q_pos (currently sqrt=%.3f) or increasing r_pos_xy.",
+                         ratio, std::sqrt(q0));
+            }
         }
 
         // Reset probabilities to uniform
         mu_ = Eigen::VectorXd::Constant(NUM_MODELS, 1.0 / NUM_MODELS);
 
-        // Reset maneuver indicator
-        lambda_ = 0.0;
+        // Reset maneuver indicator to nominal (ratio = 1.0)
+        lambda_ = LAMBDA_REF;
+        nis_baseline_ = 0.0;
+        nis_baseline_initialized_ = false;
 
         // Reset TPM to nominal
         double p_stay = p_stay_nominal_;
@@ -319,24 +346,16 @@ namespace rm_radarplugin
     // ============================================================
     double AIMM::computeLikelihood(int model_idx, const Eigen::Vector3d& z_meas)
     {
-        // Get predicted measurement and innovation covariance from the filter
-        // The filter has already run update(), so we can compute the innovation
-        Eigen::VectorXd state = filters_[model_idx].getState();
-        Eigen::VectorXd z_pred = state.head(3);  // predicted measurement = position
-        
-        Eigen::MatrixXd R = filters_[model_idx].getMeasurementNoise();
-        Eigen::MatrixXd P = filters_[model_idx].getCovariance();
-        
-        // Innovation covariance S = H*P*H' + R (H extracts position, so H*P*H' = P[0:3,0:3])
-        int dim = std::min((int)P.rows(), 3);
-        Eigen::Matrix3d S = Eigen::Matrix3d::Identity() * 0.01;
-        S.topLeftCorner(dim, dim) = P.topLeftCorner(dim, dim);
-        S += R.topLeftCorner(3, 3);
+        // Use UKF's sigma-point-based innovation computation for accurate S and z_pred
+        // This properly accounts for nonlinear process model effects on measurement prediction
+        Eigen::VectorXd z_pred;
+        Eigen::MatrixXd S;
+        filters_[model_idx].computeInnovation(z_meas, z_pred, S);
 
         // Innovation
-        Eigen::Vector3d innovation = z_meas - z_pred;
+        Eigen::Vector3d innovation = z_meas - z_pred.head(3);
 
-        // Gaussian likelihood: L = (2π)^{-d/2} |S|^{-1/2} exp(-0.5 * v^T S^{-1} v)
+        // Gaussian likelihood: L = (2π)^{-d/2} |S|^{-1/2} exp(-0.5 * ν^T S^{-1} ν)
         double det_S = S.determinant();
         if (det_S < 1e-30) det_S = 1e-30;
 
@@ -344,7 +363,8 @@ namespace rm_radarplugin
         // Clamp exponent to prevent underflow
         exponent = std::max(exponent, -500.0);
 
-        double norm_factor = std::pow(2.0 * M_PI, -1.5) * std::pow(det_S, -0.5);
+        int meas_dim = z_meas.size();
+        double norm_factor = std::pow(2.0 * M_PI, -meas_dim / 2.0) * std::pow(det_S, -0.5);
         double likelihood = norm_factor * std::exp(exponent);
 
         return std::max(likelihood, LIKELIHOOD_FLOOR);
@@ -427,43 +447,45 @@ namespace rm_radarplugin
 
     // ============================================================
     // ADAPTIVE: Compute per-model NIS (Normalised Innovation Squared)
-    // NIS_j = ν_j^T S_j^{-1} ν_j   where ν = z - z_pred, S = HPH'+R
+    // NIS_j = ν_j^T S_j^{-1} ν_j   where ν = z - z_pred, S computed via sigma points
+    // Uses UKF's sigma-point-based computation for accurate S
     // ============================================================
     double AIMM::computeNIS(int model_idx, const Eigen::Vector3d& z_meas)
     {
-        Eigen::VectorXd state = filters_[model_idx].getState();
-        Eigen::VectorXd z_pred = state.head(3);
-        
-        Eigen::MatrixXd R = filters_[model_idx].getMeasurementNoise();
-        Eigen::MatrixXd P = filters_[model_idx].getCovariance();
-        
-        int dim = std::min((int)P.rows(), 3);
-        Eigen::Matrix3d S = Eigen::Matrix3d::Identity() * 0.01;
-        S.topLeftCorner(dim, dim) = P.topLeftCorner(dim, dim);
-        S += R.topLeftCorner(3, 3);
+        Eigen::VectorXd z_pred;
+        Eigen::MatrixXd S;
+        double nis = filters_[model_idx].computeInnovation(z_meas, z_pred, S);
 
-        Eigen::Vector3d innovation = z_meas - z_pred;
-        
-        double nis = innovation.transpose() * S.inverse() * innovation;
-        return std::max(nis, 0.0);
+        Eigen::Vector3d innovation = z_meas - z_pred.head(3);
+
+        ROS_INFO_THROTTLE(2, "[AIMM::NIS] model=%s z=(%.4f,%.4f,%.4f) pred=(%.4f,%.4f,%.4f) "
+                          "innov=(%.4f,%.4f,%.4f) S_diag=(%.4f,%.4f,%.4f) NIS=%.6f",
+                          model_names_[model_idx].c_str(),
+                          z_meas(0), z_meas(1), z_meas(2),
+                          z_pred(0), z_pred(1), z_pred(2),
+                          innovation(0), innovation(1), innovation(2),
+                          S(0,0), S(1,1), S(2,2), nis);
+
+        return nis;
     }
 
     // ============================================================
     // ADAPTIVE: Update maneuver indicator λ(k) after measurement
     // 
-    // λ(k) = α * NIS_combined + (1-α) * λ(k-1)
+    // Uses a self-calibrating approach:
+    //   1. Compute raw NIS (probability-weighted across models)
+    //   2. Maintain a slow-adapting baseline NIS (the "expected" NIS when
+    //      the filter is well-matched). This handles the case where Q is
+    //      large and raw NIS is always much smaller than the theoretical 3.0.
+    //   3. λ = NIS_raw / NIS_baseline (ratio > 1 means maneuvering)
+    //   4. Apply EMA smoothing to λ
     //
-    // NIS_combined is the probability-weighted NIS across all models:
-    //   NIS_combined = Σ_j μ_j * NIS_j
-    //
-    // Under H0 (correct model, no maneuver), NIS ~ chi²(meas_dim).
-    // For 3D position measurements, E[NIS] = 3.0.
-    // When λ >> 3, the target is maneuvering beyond what the current
-    // best model can explain.
+    // Under correct model: NIS_raw ≈ NIS_baseline → λ ≈ 1.0
+    // Under maneuver:      NIS_raw >> NIS_baseline → λ >> 1.0
     // ============================================================
     void AIMM::updateManeuverIndicator(const Eigen::Vector3d& z_meas)
     {
-        // Compute per-model NIS
+        // Compute per-model NIS (using sigma-point-based innovation from UKF)
         double nis_combined = 0.0;
         for (int j = 0; j < NUM_MODELS; ++j)
         {
@@ -471,11 +493,43 @@ namespace rm_radarplugin
             nis_combined += mu_(j) * model_NIS_[j];
         }
 
+        // 首帧：直接将 baseline 初始化为当前 NIS 值
+        // 避免从错误的初始值（如 0.1）慢慢收敛，导致 λ 长时间异常
+        if (!nis_baseline_initialized_)
+        {
+            nis_baseline_ = std::max(nis_combined, 1e-6);
+            nis_baseline_initialized_ = true;
+            lambda_ = LAMBDA_REF;  // 首帧 λ = 1.0（无机动假设）
+            ROS_INFO("[AIMM] NIS baseline initialized to %.6f (first frame)", nis_baseline_);
+            return;
+        }
+
+        // 自适应 baseline：用慢速 EMA 追踪"正常"NIS 水平
+        // 但只在 λ 接近 nominal 时更新（机动时不更新，防止 baseline 被拉高）
+        if (lambda_ < LAMBDA_REF * 2.0)
+        {
+            nis_baseline_ = nis_baseline_alpha_ * nis_combined 
+                           + (1.0 - nis_baseline_alpha_) * nis_baseline_;
+        }
+        // Floor to prevent division by zero
+        nis_baseline_ = std::max(nis_baseline_, 1e-8);
+
+        // λ = ratio of current NIS to baseline
+        // λ ≈ 1.0 when filter is well-matched (no maneuver)
+        // λ >> 1.0 when NIS spikes (maneuver detected)
+        double lambda_raw = nis_combined / nis_baseline_;
+
         // Exponential moving average to smooth jitter
-        lambda_ = lambda_ema_alpha_ * nis_combined + (1.0 - lambda_ema_alpha_) * lambda_;
+        lambda_ = lambda_ema_alpha_ * lambda_raw + (1.0 - lambda_ema_alpha_) * lambda_;
         
         // Clamp to prevent runaway
         lambda_ = std::min(lambda_, 100.0);
+
+        ROS_INFO_THROTTLE(2, "[AIMM::lambda] NIS_per_model=(%.6f,%.6f,%.6f) mu=(%.3f,%.3f,%.3f) "
+                          "nis_raw=%.6f nis_baseline=%.6f lambda_ratio=%.4f lambda=%.4f",
+                          model_NIS_[0], model_NIS_[1], model_NIS_[2],
+                          mu_(0), mu_(1), mu_(2),
+                          nis_combined, nis_baseline_, lambda_raw, lambda_);
     }
 
     // ============================================================
@@ -559,7 +613,7 @@ namespace rm_radarplugin
             }
         }
         
-        ROS_DEBUG_THROTTLE(1, "[AIMM] adaptTPM: λ=%.2f, level=%.2f, p_stay=%.3f", 
+        ROS_DEBUG_THROTTLE(1, "[AIMM] adaptTPM: lambda=%.2f, level=%.2f, p_stay=%.3f", 
                            lambda_, maneuver_level, p_stay);
     }
 
@@ -582,18 +636,25 @@ namespace rm_radarplugin
         
         for (int j = 0; j < NUM_MODELS; ++j)
         {
-            // Re-capture Q_base when near nominal (λ ≈ λ_ref)
-            // This allows dynamic_reconfigure changes to propagate
-            if (Q_base_[j].size() == 0 || lambda_ < LAMBDA_REF * 1.2)
+            // Always read the *config-derived* base Q from UKF.
+            // This is the Q set by dynamic_reconfigure (ukfconfigCB),
+            // NOT the scaled Q we wrote via setProcessNoise last frame.
+            // This avoids the feedback loop where scaled Q becomes the new base.
+            Eigen::MatrixXd Q_cfg = filters_[j].getBaseProcessNoise();
+            if (Q_cfg.size() > 0)
             {
-                Q_base_[j] = filters_[j].getProcessNoise();
+                Q_base_[j] = Q_cfg;
             }
             
             Eigen::MatrixXd Q_adapted = Q_base_[j] * alpha;
             filters_[j].setProcessNoise(Q_adapted);
         }
         
-        ROS_DEBUG_THROTTLE(1, "[AIMM] adaptQ: λ=%.2f, α=%.2f", lambda_, alpha);
+        ROS_INFO_THROTTLE(2, "[AIMM] adaptQ: lambda=%.4f, alpha=%.2f, Q_base[0]_pos=%.6f, Q_actual[0]_pos=%.6f, P[0]_pos=%.4f",
+                          lambda_, alpha,
+                          Q_base_[0].rows() > 0 ? Q_base_[0](0,0) : -1.0,
+                          filters_[0].getProcessNoise()(0,0),
+                          filters_[0].getCovariance()(0,0));
     }
 
     // ============================================================
@@ -646,26 +707,34 @@ namespace rm_radarplugin
     {
         if (!initialized_) return;
 
-        // Step 3: Each model updates independently
+        // ============================================================
+        // CRITICAL: 必须在 UKF update 之前计算 NIS / 似然度 / λ
+        // 因为 update 之后 state 被量测修正，innovation ≈ 0，λ 永远为 0
+        // 
+        // 正确顺序（此时各模型 state = predict 之后的纯预测值）:
+        //   Step 3a: 计算 NIS 和似然度（用预测状态 vs 量测）
+        //   Step 3b: 更新模型概率
+        //   Step 3c: 更新机动指标 λ
+        //   Step 4:  各模型执行 UKF update（状态被量测修正）
+        //   Step 5:  组合输出
+        // ============================================================
+
+        // Step 3a-3b: Update model probabilities (uses predicted state, BEFORE update)
+        updateModelProbabilities(z_meas);
+
+        // Step 3c: Update maneuver indicator λ (uses predicted state, BEFORE update)
+        updateManeuverIndicator(z_meas);
+
+        // Step 4: NOW do the actual UKF update for each model
         for (auto& f : filters_)
         {
             f.update(z_meas);
         }
 
-        // Step 4-5: Update model probabilities based on likelihoods
-        updateModelProbabilities(z_meas);
-
-        // Step 6: Combine estimates
+        // Step 5: Combine estimates (uses post-update states)
         combineEstimates();
 
-        // Step 7: Update maneuver indicator λ for NEXT step's adaptation
-        updateManeuverIndicator(z_meas);
-        
-        // Refresh Q_base from filters (in case dynamic_reconfigure changed them)
-        // We only capture when alpha ≈ 1.0, i.e., when we haven't scaled yet
-        // This is handled inside adaptProcessNoise()
-
-        ROS_INFO_THROTTLE(2, "[AIMM] Active: %s (%.1f%%), λ=%.2f, state=(%.3f,%.3f,%.3f)",
+        ROS_INFO_THROTTLE(2, "[AIMM] Active: %s (%.1f%%), lambda=%.6f, state=(%.3f,%.3f,%.3f)",
                         getActiveModelName().c_str(),
                         mu_(getActiveModelIndex()) * 100.0,
                         lambda_,

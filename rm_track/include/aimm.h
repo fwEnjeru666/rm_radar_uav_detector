@@ -102,17 +102,19 @@ private:
 
     // =================== Adaptive machinery ===================
     
-    // Maneuver indicator λ(k): weighted NIS from combined innovation
-    // Small λ → smooth motion, large λ → aggressive maneuver
+    // Maneuver indicator λ(k): ratio of current NIS to baseline NIS
+    // λ ≈ 1.0 → smooth motion (NIS matches expectation)
+    // λ >> 1.0 → aggressive maneuver (NIS spikes above baseline)
     double lambda_{0.0};
     
     // Exponential moving average smoothing factor for λ
     // λ(k) = α_ema * NIS_raw + (1 - α_ema) * λ(k-1)
     double lambda_ema_alpha_{0.3};
     
-    // Reference λ: the expected NIS under H0 (no maneuver)
-    // For 3D measurements, NIS ~ chi²(3), so E[NIS] = 3.0
-    static constexpr double LAMBDA_REF = 3.0;
+    // Reference λ: the expected λ under H0 (no maneuver)
+    // Since λ is now a NIS ratio (NIS_current / NIS_baseline),
+    // the expected value under no maneuver is 1.0
+    static constexpr double LAMBDA_REF = 1.0;
     
     // TPM adaptation parameters
     double p_stay_min_{0.60};    // minimum stay probability (extreme maneuver)
@@ -126,6 +128,14 @@ private:
     
     // Maneuver detection: per-model NIS from last update
     std::vector<double> model_NIS_;
+
+    // Adaptive NIS baseline: tracks the expected NIS when filter is well-matched
+    // This makes λ self-calibrating — if Q is large and NIS is always small,
+    // the baseline drops accordingly, and only deviations FROM the baseline
+    // trigger maneuver detection.
+    double nis_baseline_{0.0};          // 0 表示未初始化，首帧会一步校准
+    double nis_baseline_alpha_{0.15};   // baseline EMA 速度（越大越快追踪）
+    bool nis_baseline_initialized_{false};  // 首帧标志：第一次收到 NIS 时直接赋值
     
     // Adaptive methods
     void adaptTPM();             // Adjust TPM_ based on λ

@@ -103,6 +103,7 @@ find_package(Eigen3 REQUIRED)
 generate_dynamic_reconfigure_options(
   cfg/ukf.cfg
   cfg/track.cfg
+  cfg/pose_solver.cfg
 )
 
 ###################################

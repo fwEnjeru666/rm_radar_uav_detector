@@ -366,17 +366,12 @@ namespace rm_radarplugin
     {
         // Draw detected armors
         drawArmorsVertexes(image, armors_);
-        drawArmors(image, armors_);
+        // drawArmors(image, armors_);
 
         // Draw detection info panel (top-left corner)
         int panel_y = 60;
         if(!armors_.empty())
-        {
-            // Get latest detection pose from findArmor result
-            cv::putText(image, "=== DETECTION (camera frame) ===", cv::Point(10, panel_y),
-                       cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1);
-            panel_y += 20;
-            
+        {   
             if(!target_array_.detections.empty())
             {
                 auto& det = target_array_.detections[0];
@@ -390,7 +385,7 @@ namespace rm_radarplugin
                 panel_y += 20;
             }
         }
-
+        
         // Draw tracker position if tracking
         if(track_data_.tracking)
         {
@@ -702,9 +697,15 @@ namespace rm_radarplugin
         if (is_bar_debug_)
         {
             ROS_INFO("bar_angle: %lf",  bar.angle_);
-            ROS_INFO("bar_angle_diff: %lf > %lf", max_angle_diff_, bar_angle_diff_);
-            ROS_INFO("lw_ratio: %lf > %lf", max_lw_ratio_, bar.lw_ratio_);
-            ROS_INFO("pixel_contained_ratio: %lf < %lf", min_pixel_contained_ratio_, bar.pixel_contained_ratio_);
+            ROS_INFO("bar_angle_diff: %.2f (max_allowed: %.2f) %s", 
+                     bar_angle_diff_, max_angle_diff_,
+                     bar_angle_diff_ > max_angle_diff_ ? "-> REJECT" : "-> OK");
+            ROS_INFO("lw_ratio: %.2f (min: %.2f, max: %.2f) %s", 
+                     bar.lw_ratio_, min_lw_ratio_, max_lw_ratio_,
+                     (bar.lw_ratio_ < min_lw_ratio_ || bar.lw_ratio_ > max_lw_ratio_) ? "-> REJECT" : "-> OK");
+            ROS_INFO("pixel_contained_ratio: %.3f (min: %.3f) %s", 
+                     bar.pixel_contained_ratio_, min_pixel_contained_ratio_,
+                     bar.pixel_contained_ratio_ < min_pixel_contained_ratio_ ? "-> REJECT" : "-> OK");
             ROS_INFO("/////////////////////");
         }
         if (bar_angle_diff_ > max_angle_diff_)
@@ -722,6 +723,7 @@ namespace rm_radarplugin
         contours_.clear();  
         std::vector<std::vector<cv::Point>> contours;
         findContours(morpro_image_, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        ROS_INFO_THROTTLE(3, "[findbars] Total contours: %lu, select_bar=%d", contours.size(), select_bar_);
         cv::RotatedRect rect;
         for(size_t i=0; i<contours.size(); i++)
         {
@@ -738,6 +740,7 @@ namespace rm_radarplugin
                 
                 bars_.emplace_back(bar);
             }
+        ROS_INFO_THROTTLE(3, "[findbars] Contours: %lu -> Valid bars: %lu", contours.size(), bars_.size());
     }
 
 
@@ -805,7 +808,6 @@ namespace rm_radarplugin
         return true;
     }
 
-    //todo 改posesolve类
     
     void Processor::solvePose(const Armor& armor, rm_radar_msgs::DroneDetection& target)
     {
@@ -880,7 +882,11 @@ namespace rm_radarplugin
         this->target_array_.detections.clear();
         findbars();
         if(bars_.size() < 2)
+        {
+            ROS_WARN_THROTTLE(2, "[findArmor] Only %lu bars found (need >=2). No armor detection possible.", bars_.size());
             return;
+        }
+        ROS_INFO_THROTTLE(2, "[findArmor] Found %lu bars, searching for armor pairs...", bars_.size());
         std::sort(bars_.begin(), bars_.end(), [](const Bar& a, const Bar& b) {
             return a.center_point_.y < b.center_point_.y;
         });
@@ -920,6 +926,13 @@ namespace rm_radarplugin
             bar_used[pair.index_bottom] = true;
         }
 
+        if (armors_.empty()) {
+            ROS_WARN_THROTTLE(2, "[findArmor] %lu bars found but no valid armor pairs matched! "
+                              "(check isValidArmor criteria: angle/ratio/size thresholds)", bars_.size());
+            return;
+        }
+        ROS_INFO_THROTTLE(2, "[findArmor] Matched %lu armors from %lu bars", armors_.size(), bars_.size());
+
         for(auto& armor : armors_)
         {
             // warp up data
@@ -954,12 +967,10 @@ namespace rm_radarplugin
             target_pub_single_.publish(target);
             target_array_.detections.push_back(target);
         }
+        target_array_.is_red = target_is_red_;
         target_pub_.publish(target_array_);
 
     }
-
-    //wide-cam
-
 
     rm_vision::ProcessorInterface::Object Processor::getObj()
     {

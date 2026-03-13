@@ -2,7 +2,7 @@
  * @Author: fwEnjeru666 enjeru2121@gmail.com
  * @Date: 2026-02-05 16:49:04
  * @LastEditors: fwEnjeru666 enjeru2121@gmail.com
- * @LastEditTime: 2026-02-07 21:11:41
+ * @LastEditTime: 2026-03-13 18:39:11
  * @FilePath: /radar_detection_moduel/src/rm_radarplugin/rm_track/include/pose_solver.h
  * @Description: pose solver.h
  * 
@@ -23,6 +23,8 @@
 #include <rm_msgs/TrackData.h>
 #include <rm_radar_msgs/DroneDetection.h>
 #include <rm_radar_msgs/DroneDetectionArray.h>
+#include <dynamic_reconfigure/server.h>
+#include <rm_track/pose_solverConfig.h>
 
 
 
@@ -109,12 +111,15 @@ namespace rm_radarplugin
         }
 
         //point 3d
-        double sz = 0.133 / 2.0; // armor size 130mm x 130mm
+        //单位是米(m)，50mm = 0.050m，12mm = 0.012m
+        double armor_half_w_ = 0.012 / 2.0;   // 宽 12mm (水平方向)
+        double armor_half_h_ = 0.050 / 2.0;   // 高 50mm (竖直方向)
+
         std::vector<cv::Point3d> armor_3d_points_{
-            cv::Point3d(-sz, -sz, 0),
-            cv::Point3d(-sz, sz, 0),
-            cv::Point3d(sz, sz, 0),
-            cv::Point3d(sz, -sz, 0)
+            cv::Point3d(-armor_half_w_, -armor_half_h_, 0),  // TL (左上)
+            cv::Point3d( armor_half_w_, -armor_half_h_, 0),  // TR (右上)
+            cv::Point3d( armor_half_w_,  armor_half_h_, 0),  // BR (右下)
+            cv::Point3d(-armor_half_w_,  armor_half_h_, 0)   // BL (左下)
         };
         //point 2d
         std::vector<cv::Point2d> armor_2d_points_;
@@ -164,6 +169,96 @@ namespace rm_radarplugin
        //optimize translation/ Quaternion
     //    Eigen::Vector3d optimized_tvec_;
        Eigen::Quaterniond optimized_q_ = Eigen::Quaterniond::Identity();
+       
+       // ---- PoseSolver dynamic reconfigure (EMA on/off + params) ----
+       dynamic_reconfigure::Server<rm_track::pose_solverConfig>* pose_solver_cfg_srv_{nullptr};
+       dynamic_reconfigure::Server<rm_track::pose_solverConfig>::CallbackType pose_solver_cfg_cb_;
+
+       bool use_ema_{true};
+
+       void poseSolverConfigCB(rm_track::pose_solverConfig& config, uint32_t level)
+       {
+           use_ema_ = config.use_ema;
+           ema_alpha_ = config.ema_alpha;
+           spike_threshold_ = config.spike_threshold;
+           max_consecutive_spikes_ = config.max_consecutive_spikes;
+
+           // turning EMA back on should start from current measurement
+           if (use_ema_) {
+               resetEMA();
+           }
+
+           ROS_INFO("[PoseSolver] Reconfigure: use_ema=%d, ema_alpha=%.3f, spike_threshold=%.3f, max_consecutive_spikes=%d",
+                    (int)use_ema_, ema_alpha_, spike_threshold_, max_consecutive_spikes_);
+       }
+       // ---- end dynamic reconfigure ----
+
+       // ---- EMA smoothing & spike rejection ----
+       bool ema_initialized_ = false;
+       Eigen::Vector3d ema_tvec_ = Eigen::Vector3d::Zero();
+       Eigen::Quaterniond ema_q_ = Eigen::Quaterniond::Identity();
+       double ema_alpha_ = 0.3;          // 0→全用历史, 1→不平滑. 0.3 是个好起点
+       double spike_threshold_ = 0.5;    // 帧间位移 > 此值(m) 视为毛刺, 用上一帧
+       int spike_count_ = 0;
+       int max_consecutive_spikes_ = 5;  // 连续毛刺超过此数 → 认为目标真的移动了, 重置EMA
+
+       Eigen::Vector3d applyEMA(const Eigen::Vector3d& raw_t, const Eigen::Quaterniond& raw_q)
+       {
+           // Bypass if disabled
+           if (!use_ema_) {
+               ema_q_ = raw_q;
+               ema_tvec_ = raw_t;
+               ema_initialized_ = false; // avoid using stale history when re-enabled
+               spike_count_ = 0;
+               return raw_t;
+           }
+
+           if (!ema_initialized_)
+           {
+               ema_tvec_ = raw_t;
+               ema_q_ = raw_q;
+               ema_initialized_ = true;
+               spike_count_ = 0;
+               return raw_t;
+           }
+
+           double jump = (raw_t - ema_tvec_).norm();
+           if (jump > spike_threshold_)
+           {
+               spike_count_++;
+               if (spike_count_ >= max_consecutive_spikes_)
+               {
+                   // 连续多帧都"跳"到新位置 → 目标确实移动了, 重置
+                   ROS_WARN("[PoseSolver] %d consecutive jumps (%.3fm), resetting EMA to new position",
+                            spike_count_, jump);
+                   ema_tvec_ = raw_t;
+                   ema_q_ = raw_q;
+                   spike_count_ = 0;
+                   return ema_tvec_;
+               }
+               else
+               {
+                   ROS_WARN_THROTTLE(1, "[PoseSolver] Spike rejected: jump=%.3fm > %.3fm (count=%d/%d)",
+                                     jump, spike_threshold_, spike_count_, max_consecutive_spikes_);
+                   return ema_tvec_;  // 沿用上一帧
+               }
+           }
+
+           spike_count_ = 0;
+           // EMA: smoothed = alpha * new + (1-alpha) * old
+           ema_tvec_ = ema_alpha_ * raw_t + (1.0 - ema_alpha_) * ema_tvec_;
+           // Quaternion SLERP for rotation smoothing
+           ema_q_ = ema_q_.slerp(ema_alpha_, raw_q);
+           ema_q_.normalize();
+           return ema_tvec_;
+       }
+
+       void resetEMA()
+       {
+           ema_initialized_ = false;
+           spike_count_ = 0;
+       }
+       // ---- end EMA ----
        
        //TF broadcaster (moved inside class)
        std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

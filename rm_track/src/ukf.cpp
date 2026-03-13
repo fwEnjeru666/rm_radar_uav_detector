@@ -53,6 +53,7 @@ namespace rm_radarplugin
         // Q_ is state_dim_ x state_dim_, R_ is measurement_dim x measurement_dim
         // For now, initialize Q_ to state_dim_ and R_ to 3 (typical position measurement)
         Q_ = Eigen::MatrixXd::Identity(state_dim_, state_dim_) * 0.01;
+        Q_base_ = Q_;  // 基础Q矩阵初始化
         meas_dim_ = 3;  // Default measurement dimension (x, y, z)
         R_ = Eigen::MatrixXd::Identity(meas_dim_, meas_dim_) * 0.1;
         R_base_ = R_;  // 基础R矩阵初始化
@@ -246,7 +247,8 @@ namespace rm_radarplugin
             R_(3, 3) = r_yaw_;
         }
         
-        // 保存基础R矩阵，供Tracker自适应缩放使用
+        // 保存基础矩阵，供AIMM/Tracker自适应缩放使用
+        Q_base_ = Q_;
         R_base_ = R_;
         
         ROS_INFO("UKF Q/R matrices updated. Q diag: [%.4f, %.4f, %.4f, ...], R diag: [%.4f, %.4f, %.4f]",
@@ -592,6 +594,43 @@ namespace rm_radarplugin
         return P_;
     }
 
-}
+    double UKF::computeInnovation(const Eigen::VectorXd& z_meas,
+                                   Eigen::VectorXd& z_pred_out,
+                                   Eigen::MatrixXd& S_out) const
+    {
+        int meas_dim = z_meas.size();
+
+        // Map predicted sigma points into measurement space
+        Eigen::MatrixXd Zsig = Eigen::MatrixXd::Zero(meas_dim, sigma_point_count_);
+        for (int i = 0; i < sigma_point_count_; i++)
+        {
+            Zsig.col(i) = Xsig_pred_.col(i).head(meas_dim);
+        }
+
+        // Predicted measurement mean (using sigma-point weights)
+        z_pred_out = Eigen::VectorXd::Zero(meas_dim);
+        for (int i = 0; i < sigma_point_count_; i++)
+        {
+            z_pred_out += weights_m_(i) * Zsig.col(i);
+        }
+
+        // Innovation covariance S = Σ w_c * (z_sig - z_pred)(z_sig - z_pred)^T + R
+        S_out = Eigen::MatrixXd::Zero(meas_dim, meas_dim);
+        for (int i = 0; i < sigma_point_count_; i++)
+        {
+            Eigen::VectorXd z_diff = Zsig.col(i) - z_pred_out;
+            S_out += weights_c_(i) * (z_diff * z_diff.transpose());
+        }
+        S_out += R_;
+
+        // Innovation
+        Eigen::VectorXd innovation = z_meas - z_pred_out;
+
+        // NIS = ν^T S^{-1} ν
+        double nis = innovation.transpose() * S_out.inverse() * innovation;
+        return std::max(nis, 0.0);
+    }
+
+}  // namespace rm_radarplugin
 
 

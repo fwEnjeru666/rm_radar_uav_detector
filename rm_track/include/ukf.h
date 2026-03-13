@@ -41,16 +41,25 @@ namespace rm_radarplugin
 
         // Q matrix access for AIMM adaptive scaling
         Eigen::MatrixXd getProcessNoise() const { return Q_; }
+        Eigen::MatrixXd getBaseProcessNoise() const { return Q_base_; }
         void setProcessNoise(const Eigen::MatrixXd& Q) { Q_ = Q; }
 
         // Access the innovation covariance S_ from last update (for AIMM likelihood)
         Eigen::MatrixXd getInnovationCovariance() const { return S_; }
         Eigen::VectorXd getPredictedMeasurement() const { return z_pred_; }
 
+        // Compute innovation statistics (z_pred, S, NIS) from current predicted sigma points
+        // WITHOUT modifying state. Call AFTER predict(), BEFORE update().
+        // Returns NIS = ν^T S^{-1} ν where ν = z - z_pred
+        double computeInnovation(const Eigen::VectorXd& z_meas,
+                                 Eigen::VectorXd& z_pred_out,
+                                 Eigen::MatrixXd& S_out) const;
+
     private:
         Eigen::VectorXd state_;  // State vector
         Eigen::MatrixXd P_;      // State covariance matrix
-        Eigen::MatrixXd Q_;      // Process noise covariance matrix
+        Eigen::MatrixXd Q_;      // Process noise covariance matrix (may be scaled by AIMM)
+        Eigen::MatrixXd Q_base_; // Base process noise from dynamic_reconfigure (before AIMM scaling)
         Eigen::MatrixXd R_;      // Measurement noise covariance matrix (per-frame, may be scaled)
         Eigen::MatrixXd R_base_; // Base measurement noise from dynamic_reconfigure
 

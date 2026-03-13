@@ -348,9 +348,7 @@ namespace rm_radarplugin
             imageProcess(temp);
             findArmor();
             draw();
-            target_array_.is_red = target_is_red_;
-            target_pub_.publish(target_array_);
-
+            // Note: target_array_ is already published inside findArmor(), no need to publish again
         }
 
         void wide_cam_callback(const sensor_msgs::ImageConstPtr& img, const sensor_msgs::CameraInfoConstPtr& info)
@@ -521,12 +519,14 @@ namespace rm_radarplugin
         bool target_is_armor_ = true;
 
         //solve pnp
-        double sz = 0.133 / 2.0; // armor size 130mm x 130mm
+        // 3D模型: 宽=bar长度(12mm), 高=两bar中心距(45mm)
+        double armor_half_w_ = 0.012 / 2.0;   // half bar length = 6mm
+        double armor_half_h_ = 0.045 / 2.0;   // half inter-bar distance = 22.5mm
         std::vector<cv::Point3d> armor_3d_points_{
-            cv::Point3d(-sz, -sz, 0),
-            cv::Point3d(-sz, sz, 0),
-            cv::Point3d(sz, sz, 0),
-            cv::Point3d(sz, -sz, 0)
+            cv::Point3d(-armor_half_w_, -armor_half_h_, 0),  // TL
+            cv::Point3d( armor_half_w_, -armor_half_h_, 0),  // TR
+            cv::Point3d( armor_half_w_,  armor_half_h_, 0),  // BR
+            cv::Point3d(-armor_half_w_,  armor_half_h_, 0)   // BL
         };
 
         void solvePose(const Armor& armor, rm_radar_msgs::DroneDetection& target);

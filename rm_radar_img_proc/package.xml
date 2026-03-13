@@ -65,6 +65,7 @@
   <depend>rm_radar_msgs</depend>
   <depend>rm_msgs</depend>
   <depend>rm_vision</depend>
+  <depend>camera_info_manager</depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>
