@@ -264,12 +264,21 @@ namespace rm_radarplugin
     for (const auto& armor : armors)
     {
         for (int j = 0; j < 4; j++)
-        cv::line(image, armor.bars_4points_[j], armor.bars_4points_[(j + 1) % 4], line_color, line_width_);
-        
-    
-        if (use_id_cls_)
+            cv::line(image, armor.bars_4points_[j], armor.bars_4points_[(j + 1) % 4], line_color, line_width_);
+
+        // Debug: score + angle (PCA-major-axis)
         {
-        putText(image, std::to_string(armor.id_), armor.bars_4points_[0], cv::FONT_HERSHEY_COMPLEX, 3, cv::Scalar(0, 255, 0));
+            std::ostringstream ss1;
+            ss1 << std::fixed << std::setprecision(2) << "s:" << armor.confidence_;
+            cv::putText(image, ss1.str(), armor.bars_4points_[0], cv::FONT_HERSHEY_COMPLEX,
+                        1.0, cv::Scalar(0, 255, 0), 2);
+
+            // std::ostringstream ss2;
+            // ss2 << std::fixed << std::setprecision(1) << "a:" << armor.getArmorAnglePcaDeg();
+            // cv::Point2d p = armor.bars_4points_[0];
+            // p.y -= 50;
+            // cv::putText(image, ss2.str(), p, cv::FONT_HERSHEY_COMPLEX,
+            //             1.0, cv::Scalar(0, 255, 255), 2);
         }
     }
     }
@@ -912,15 +921,18 @@ namespace rm_radarplugin
             return a.score > b.score;
         });
 
+        double tmp_score = 0.0;
         std::vector<bool> bar_used(bars_.size(), false);
         for (const auto& pair : match_pairs)
         {
             if (bar_used[pair.index_top] || bar_used[pair.index_bottom])
                 continue;
             
+            tmp_score = pair.score;
             Bar& bar_top = bars_[pair.index_top];
             Bar& bar_bottom = bars_[pair.index_bottom];
             Armor armor_tmp(bar_top, bar_bottom);
+            armor_tmp.confidence_ = tmp_score;
             this->armors_.emplace_back(armor_tmp);
             bar_used[pair.index_top] = true;
             bar_used[pair.index_bottom] = true;

@@ -91,6 +91,8 @@ namespace rm_radarplugin
         double area_;
         double parallel_dist_;
         double vertical_dist_;
+        double angle_deg_{0.0};
+        double angle_pca_deg_{0.0};
 
         Armor(Bar& bar_up, Bar& bar_bottom)
         {
@@ -101,9 +103,80 @@ namespace rm_radarplugin
             getCenterPoint();
             getParallelDist();
             getVerticalDist();
+            getArmorAngle();
+            getArmorAnglePCA();
             id_ = 0;
             confidence_ = 0;
         };
+
+        // Cached heading angles in degrees
+        inline double getArmorAngleDeg() const { return angle_deg_; }
+        inline double getArmorAnglePcaDeg() const { return angle_pca_deg_; }
+
+        // Existing: top-edge heading (TL->TR)
+        void getArmorAngle()
+        {
+            if (bars_4points_.size() != 4) {
+                angle_deg_ = 0.0;
+                return;
+            }
+            const double dx = static_cast<double>(bars_4points_[1].x - bars_4points_[0].x);
+            const double dy = static_cast<double>(bars_4points_[1].y - bars_4points_[0].y);
+            if (std::abs(dx) < 1e-9 && std::abs(dy) < 1e-9) {
+                angle_deg_ = 0.0;
+                return;
+            }
+            double a = std::atan2(dy, dx) * 180.0 / CV_PI;
+            while (a > 90.0)  a -= 180.0;
+            while (a < -90.0) a += 180.0;
+            angle_deg_ = a;
+        }
+
+        // New: PCA major-axis heading (more stable under vertex jitter)
+        void getArmorAnglePCA()
+        {
+            if (bars_4points_.size() != 4) {
+                angle_pca_deg_ = 0.0;
+                return;
+            }
+
+            // Compute mean
+            double mx = 0.0, my = 0.0;
+            for (const auto& p : bars_4points_) {
+                mx += p.x;
+                my += p.y;
+            }
+            mx /= 4.0;
+            my /= 4.0;
+
+            // 2x2 covariance (unnormalized is fine for eigenvectors)
+            double sxx = 0.0, sxy = 0.0, syy = 0.0;
+            for (const auto& p : bars_4points_) {
+                const double x = p.x - mx;
+                const double y = p.y - my;
+                sxx += x * x;
+                sxy += x * y;
+                syy += y * y;
+            }
+
+            // Degenerate check
+            const double tr = sxx + syy;
+            if (tr < 1e-6) {
+                angle_pca_deg_ = 0.0;
+                return;
+            }
+
+            // Eigenvector for the largest eigenvalue of [[sxx,sxy],[sxy,syy]]
+            // Solve analytically: angle = 0.5 * atan2(2*sxy, sxx - syy)
+            double theta = 0.5 * std::atan2(2.0 * sxy, (sxx - syy));
+            double a = theta * 180.0 / CV_PI;
+
+            // Normalize to [-90, 90]
+            while (a > 90.0)  a -= 180.0;
+            while (a < -90.0) a += 180.0;
+
+            angle_pca_deg_ = a;
+        }
 
         std::vector<cv::Point2f> getHorizontalBarEndpoints(const Bar* bar)
         {
