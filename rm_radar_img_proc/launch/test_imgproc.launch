@@ -3,7 +3,7 @@
 
   Usage examples:
     # Test with a single image (loops at 2 fps)
-    roslaunch rm_radar_img_proc test_imgproc.launch image:=/path/to/image.jpg
+    roslaunch rm_radar_img_proc test_imgproc.launch image:=/home/enjeru/radar_detection_moduel/src/rm_radarplugin/rm_radar_img_proc/test_img/image.png
 
     # Test with a video file
     roslaunch rm_radar_img_proc test_imgproc.launch video:=/path/to/video.mp4

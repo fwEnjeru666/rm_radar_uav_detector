@@ -27,6 +27,7 @@
 #include <rm_radar_img_proc/DrawConfig.h>
 #include <rm_vision/vision_base/processor_interface.h>
 #include <common.h>
+#include <cstdio>
 
 
 
@@ -540,6 +541,11 @@ namespace rm_radarplugin
         /// draw
         DrawImage draw_type_{};
         int line_width_{};
+
+        // Show FPS overlay (dynamic_reconfigure: Draw.cfg/show_fps)
+        bool show_fps_{false};
+        double fps_ema_{0.0};
+        ros::Time last_fps_stamp_{};
 
         std::vector<Bar> bars_{};
         std::vector<Armor> armors_{};

@@ -517,103 +517,113 @@ namespace rm_radarplugin
     {
         draw_type_ = DrawImage(config.draw_type);
         line_width_ = config.line_width;
-        // show_fps_ = config.show_fps;
-        // if (draw_type_ != DrawImage::PROJECT)
-        // {
-        //     track_sub_.shutdown();
-        //     compute_sub_.shutdown();
-        //     detection_sub_.shutdown();
-        // }
-        // else
-        // {
-        //     track_sub_ = nh_.subscribe("/track", 1, &Processor::trackCB, this);
-        //     compute_sub_ = nh_.subscribe("/compute_target_position", 1, &Processor::computeCB, this);
-        //     detection_sub_ = nh_.subscribe<rm_msgs::TargetDetectionArray>("/detection", 10, &Processor::detectionCB, this);
-        // }
+
+        if (show_fps_ != config.show_fps)
+        {
+            show_fps_ = config.show_fps;
+            fps_ema_ = 0.0;
+            last_fps_stamp_ = ros::Time();
+        }
+        else
+        {
+            show_fps_ = config.show_fps;
+        }
     }
 
-    ///////////////
 
     void Processor::draw()
     {
         cv::Mat draw_image;
         sensor_msgs::ImagePtr msg;
         if(is_tele_cam_)
-        {   
+        {
             ROS_INFO_ONCE("[mode] tele camera draw image");
             if (draw_type_ == DrawImage::RAW)
             {
                 raw_image_.copyTo(draw_image);
-                msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
             }
             else if(draw_type_ == DrawImage::BINARY)
-            {   
+            {
                 binary_image_.copyTo(draw_image);
-                msg = cv_bridge::CvImage(std_msgs::Header(), "mono8", draw_image).toImageMsg();
             }
             else if (draw_type_ == DrawImage::MORPHOLOGY)
             {
                 cv::cvtColor(morpro_image_, draw_image, cv::COLOR_GRAY2BGR);
-                msg = cv_bridge::CvImage(std_msgs::Header(), "mono8", draw_image).toImageMsg();
             }
             else if (draw_type_ == DrawImage::BARS)
             {
                 raw_image_.copyTo(draw_image);
                 drawBars(draw_image);
-                msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
             }
             else if (draw_type_ == DrawImage::ARMORS)
             {
                 raw_image_.copyTo(draw_image);
                 drawArmors(draw_image);
-                msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
             }
             else if (draw_type_ == DrawImage::ARMORS_VERTEXS)
             {
                 raw_image_.copyTo(draw_image);
                 drawArmorsVertexes(draw_image);
-                msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
             }
             else if (draw_type_ == DrawImage::WARP)
             {
                 if (!drawWarp())
                 {
                     ROS_WARN("cannot draw warp image, because armors size != 1");
-                    // Fall back to raw image
                     raw_image_.copyTo(draw_image);
-                    msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
                 }
                 else if (!warp_image_.empty())
                 {
                     cv::imshow("warp_image", warp_image_);
                     cv::waitKey(1);
-                    // Also publish the raw image with armors
                     raw_image_.copyTo(draw_image);
                     drawArmors(draw_image);
-                    msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
                 }
                 else
                 {
                     ROS_WARN("warp_image is empty");
                     raw_image_.copyTo(draw_image);
-                    msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
                 }
             }
             else if (draw_type_ == DrawImage::TRACKER)
             {
                 raw_image_.copyTo(draw_image);
                 drawTracker(draw_image);
-                msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
             }
             else
             {
                 raw_image_.copyTo(draw_image);
                 drawArmors(draw_image);
                 drawBars(draw_image);
-                msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_image).toImageMsg();
             }
         }
-        // Only publish if msg is valid
+
+        if (show_fps_ && !draw_image.empty())
+        {
+            const ros::WallTime now_wall = ros::WallTime::now();
+            static ros::WallTime last_wall = now_wall;
+
+            const double dt = (now_wall - last_wall).toSec();
+            last_wall = now_wall;
+
+            if (dt > 1e-4 && dt < 1.0)
+            {
+                const double fps_inst = 1.0 / dt;
+                const double alpha = 0.1;
+                fps_ema_ = (fps_ema_ <= 1e-6) ? fps_inst : (alpha * fps_inst + (1.0 - alpha) * fps_ema_);
+            }
+
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "FPS: %.1f", fps_ema_);
+            cv::putText(draw_image, buf, cv::Point(10, 25), cv::FONT_HERSHEY_SIMPLEX,
+                        0.7, cv::Scalar(0, 255, 255), 2);
+        }
+
+        if (!draw_image.empty())
+        {
+            const bool is_mono = (draw_type_ == DrawImage::BINARY);
+            msg = cv_bridge::CvImage(std_msgs::Header(), is_mono ? "mono8" : "bgr8", draw_image).toImageMsg();
+        }
         if(msg)
         {
             image_pub_.publish(msg);
