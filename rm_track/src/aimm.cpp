@@ -5,7 +5,6 @@
 
 namespace rm_radarplugin
 {
-    // Out-of-class definitions for static constexpr members (required pre-C++17)
     constexpr int AIMM::NUM_MODELS;
     constexpr int AIMM::OUTPUT_DIM;
     constexpr double AIMM::LAMBDA_REF;
@@ -238,6 +237,139 @@ namespace rm_radarplugin
     }
 
     // ============================================================
+    // Helper: model covariance -> unified covariance (6D)
+    // unified_x = [x, y, z, vx, vy, vz]
+    // ============================================================
+    static Eigen::MatrixXd toUnifiedCovariance(const Eigen::VectorXd& x_model,
+                                               const Eigen::MatrixXd& P_model,
+                                               int model_type)
+    {
+        constexpr int OUT = 6;
+        Eigen::MatrixXd P_uni = Eigen::MatrixXd::Zero(OUT, OUT);
+
+        if (P_model.rows() == 0 || P_model.cols() == 0)
+        {
+            P_uni.setIdentity();
+            return P_uni;
+        }
+
+        switch (model_type)
+        {
+            case rm_track::CV:
+            case rm_track::CA:
+            {
+                // CV/CA: first 6 states are already [x,y,z,vx,vy,vz]
+                int dim = std::min<int>(P_model.rows(), OUT);
+                P_uni.topLeftCorner(dim, dim) = P_model.topLeftCorner(dim, dim);
+                break;
+            }
+            case rm_track::CTRV:
+            {
+                const int CTRV_DIM = std::min<int>(6, (int)P_model.rows());
+                Eigen::MatrixXd P_ctrv = P_model.topLeftCorner(CTRV_DIM, CTRV_DIM);
+
+                double v = (x_model.size() > 3) ? x_model(3) : 0.0;
+                double yaw = (x_model.size() > 4) ? x_model(4) : 0.0;
+                double c = std::cos(yaw);
+                double s = std::sin(yaw);
+
+                // J = d[x y z vx vy vz] / d[x y z v yaw yaw_rate]
+                Eigen::Matrix<double, OUT, 6> J;
+                J.setZero();
+                J(0, 0) = 1.0;
+                J(1, 1) = 1.0;
+                J(2, 2) = 1.0;
+                J(3, 3) = c;
+                J(3, 4) = -v * s;
+                J(4, 3) = s;
+                J(4, 4) = v * c;
+
+                Eigen::MatrixXd J_dyn = J.leftCols(CTRV_DIM);
+                P_uni = J_dyn * P_ctrv * J_dyn.transpose();
+                break;
+            }
+            default:
+            {
+                int dim = std::min<int>(P_model.rows(), OUT);
+                P_uni.topLeftCorner(dim, dim) = P_model.topLeftCorner(dim, dim);
+                break;
+            }
+        }
+
+        P_uni = 0.5 * (P_uni + P_uni.transpose());
+        return P_uni;
+    }
+
+    // ============================================================
+    // Helper: unified covariance (6D) -> model covariance
+    // unified_x = [x, y, z, vx, vy, vz]
+    // ============================================================
+    static constexpr int kUnifiedDim = 6;
+    static Eigen::MatrixXd fromUnifiedCovariance(const Eigen::VectorXd& unified_x,
+                                                 const Eigen::MatrixXd& P_uni,
+                                                 int model_type,
+                                                 const Eigen::MatrixXd& original_P)
+    {
+        Eigen::MatrixXd P_model = original_P;
+
+        if (P_uni.rows() == 0 || P_uni.cols() == 0)
+        {
+            return P_model;
+        }
+
+        switch (model_type)
+        {
+            case rm_track::CV:
+            case rm_track::CA:
+            {
+                // CV/CA 量纲一致，直接安全切块复制
+                int dim = std::min<int>(P_model.rows(), kUnifiedDim);
+                P_model.topLeftCorner(dim, dim) = P_uni.topLeftCorner(dim, dim);
+                break;
+            }
+            case rm_track::CTRV:
+            {
+                // unified_x 是 [x, y, z, vx, vy, vz]
+                double vx = unified_x(3);
+                double vy = unified_x(4);
+                
+                // 增加极小值保护，防止除以 0 导致系统崩溃
+                double v_sq = std::max(vx * vx + vy * vy, 1e-6); 
+                double v = std::sqrt(v_sq);
+
+                // 构建 6x6 的逆向雅可比矩阵 J_inv (从笛卡尔到极坐标的偏导数)
+                Eigen::Matrix<double, 6, kUnifiedDim> J_inv;
+                J_inv.setZero();
+                J_inv(0, 0) = 1.0; // x
+                J_inv(1, 1) = 1.0; // y
+                J_inv(2, 2) = 1.0; // z
+
+                // 速度和角度的偏导数
+                J_inv(3, 3) = vx / v;         // dv / dvx
+                J_inv(3, 4) = vy / v;         // dv / dvy
+                J_inv(4, 3) = -vy / v_sq;     // dyaw / dvx
+                J_inv(4, 4) = vx / v_sq;      // dyaw / dvy
+
+                const int CTRV_DIM = std::min<int>(6, (int)P_model.rows());
+                Eigen::MatrixXd J_dyn = J_inv.topRows(CTRV_DIM);
+                
+                // 核心转换公式：P_model = J_inv * P_uni * J_inv^T
+                P_model.topLeftCorner(CTRV_DIM, CTRV_DIM) = J_dyn * P_uni * J_dyn.transpose();
+                break;
+            }
+            default:
+            {
+                int dim = std::min<int>(P_model.rows(), kUnifiedDim);
+                P_model.topLeftCorner(dim, dim) = P_uni.topLeftCorner(dim, dim);
+                break;
+            }
+        }
+        
+        // 强制对称，防止 UKF 的 Cholesky 分解报错
+        P_model = 0.5 * (P_model + P_model.transpose()); 
+        return P_model;
+    }
+    // ============================================================
     // Map unified 6D → model-specific state
     // ============================================================
     Eigen::VectorXd AIMM::fromUnifiedState(const Eigen::VectorXd& unified, int model_type,
@@ -311,7 +443,7 @@ namespace rm_radarplugin
 
         for (int j = 0; j < NUM_MODELS; ++j)
         {
-            // Compute mixed state x0j = Σ_i μ_{i|j} * x_i (in unified space)
+            // Mixed mean in unified space
             Eigen::VectorXd x0j = Eigen::VectorXd::Zero(OUTPUT_DIM);
             for (int i = 0; i < NUM_MODELS; ++i)
             {
@@ -319,23 +451,23 @@ namespace rm_radarplugin
                 x0j += mixing_probs_(i, j) * xi_unified;
             }
 
-            // Compute mixed covariance P0j = Σ_i μ_{i|j} * [(xi-x0j)(xi-x0j)^T + Pi]
-            // Use OUTPUT_DIM x OUTPUT_DIM covariance in unified space
+            // Mixed covariance in unified space
             Eigen::MatrixXd P0j = Eigen::MatrixXd::Zero(OUTPUT_DIM, OUTPUT_DIM);
             for (int i = 0; i < NUM_MODELS; ++i)
             {
-                Eigen::VectorXd xi_unified = toUnifiedState(filters_[i].getState(), model_types_[i]);
+                const Eigen::VectorXd xi_model = filters_[i].getState();
+                const Eigen::MatrixXd Pi_model = filters_[i].getCovariance();
+
+                Eigen::VectorXd xi_unified = toUnifiedState(xi_model, model_types_[i]);
                 Eigen::VectorXd diff = xi_unified - x0j;
 
-                // Get covariance in unified space (take top-left 6x6 block)
-                Eigen::MatrixXd Pi_full = filters_[i].getCovariance();
-                int dim = std::min((int)Pi_full.rows(), OUTPUT_DIM);
-                Eigen::MatrixXd Pi = Eigen::MatrixXd::Identity(OUTPUT_DIM, OUTPUT_DIM) * 0.01;
-                Pi.topLeftCorner(dim, dim) = Pi_full.topLeftCorner(dim, dim);
+                // model -> unified
+                Eigen::MatrixXd Pi_unified = toUnifiedCovariance(xi_model, Pi_model, model_types_[i]);
 
-                P0j += mixing_probs_(i, j) * (Pi + diff * diff.transpose());
+                P0j += mixing_probs_(i, j) * (Pi_unified + diff * diff.transpose());
             }
 
+            P0j = 0.5 * (P0j + P0j.transpose());
             mixed_states_[j] = x0j;
             mixed_covs_[j] = P0j;
         }
@@ -347,25 +479,27 @@ namespace rm_radarplugin
     double AIMM::computeLikelihood(int model_idx, const Eigen::Vector3d& z_meas)
     {
         // Use UKF's sigma-point-based innovation computation for accurate S and z_pred
-        // This properly accounts for nonlinear process model effects on measurement prediction
+        // computeInnovation returns the NIS (Normalized Innovation Squared), which is exactly v^T * S^-1 * v
         Eigen::VectorXd z_pred;
         Eigen::MatrixXd S;
-        filters_[model_idx].computeInnovation(z_meas, z_pred, S);
+        double nis = filters_[model_idx].computeInnovation(z_meas, z_pred, S);
 
-        // Innovation
-        Eigen::Vector3d innovation = z_meas - z_pred.head(3);
-
-        // Gaussian likelihood: L = (2π)^{-d/2} |S|^{-1/2} exp(-0.5 * ν^T S^{-1} ν)
+        // Gaussian likelihood: L = (2π)^{-d/2} |S|^{-1/2} exp(-0.5 * NIS)
         double det_S = S.determinant();
         if (det_S < 1e-30) det_S = 1e-30;
 
-        double exponent = -0.5 * innovation.transpose() * S.inverse() * innovation;
+        // Directly use the returned NIS for the exponent, avoiding redundant S.inverse() computation
+        double exponent = -0.5 * nis;
+        
         // Clamp exponent to prevent underflow
         exponent = std::max(exponent, -500.0);
 
-        int meas_dim = z_meas.size();
-        double norm_factor = std::pow(2.0 * M_PI, -meas_dim / 2.0) * std::pow(det_S, -0.5);
-        double likelihood = norm_factor * std::exp(exponent);
+        //current only 3 dim
+        constexpr double LOG_2PI_D = 3.0 * 1.8378770664093453;
+
+        // Using log-likelihood for numerical stability, then exponentiate at the end
+        double log_likelihood = -0.5 * (LOG_2PI_D + std::log(det_S)) + exponent;
+        double likelihood = std::exp(log_likelihood);
 
         return std::max(likelihood, LIKELIHOOD_FLOOR);
     }
@@ -421,7 +555,7 @@ namespace rm_radarplugin
     // ============================================================
     void AIMM::combineEstimates()
     {
-        // Combined state x = Σ_j μ_j * x_j (in unified space)
+        // Combined state in unified space
         combined_state_ = Eigen::VectorXd::Zero(OUTPUT_DIM);
         for (int j = 0; j < NUM_MODELS; ++j)
         {
@@ -429,20 +563,22 @@ namespace rm_radarplugin
             combined_state_ += mu_(j) * xj_unified;
         }
 
-        // Combined covariance P = Σ_j μ_j * [Pj + (xj - x)(xj - x)^T]
+        // Combined covariance in unified space
         combined_cov_ = Eigen::MatrixXd::Zero(OUTPUT_DIM, OUTPUT_DIM);
         for (int j = 0; j < NUM_MODELS; ++j)
         {
-            Eigen::VectorXd xj_unified = toUnifiedState(filters_[j].getState(), model_types_[j]);
+            const Eigen::VectorXd xj_model = filters_[j].getState();
+            const Eigen::MatrixXd Pj_model = filters_[j].getCovariance();
+
+            Eigen::VectorXd xj_unified = toUnifiedState(xj_model, model_types_[j]);
             Eigen::VectorXd diff = xj_unified - combined_state_;
 
-            Eigen::MatrixXd Pj_full = filters_[j].getCovariance();
-            int dim = std::min((int)Pj_full.rows(), OUTPUT_DIM);
-            Eigen::MatrixXd Pj = Eigen::MatrixXd::Identity(OUTPUT_DIM, OUTPUT_DIM) * 0.01;
-            Pj.topLeftCorner(dim, dim) = Pj_full.topLeftCorner(dim, dim);
+            // model -> unified
+            Eigen::MatrixXd Pj_unified = toUnifiedCovariance(xj_model, Pj_model, model_types_[j]);
 
-            combined_cov_ += mu_(j) * (Pj + diff * diff.transpose());
+            combined_cov_ += mu_(j) * (Pj_unified + diff * diff.transpose());
         }
+        combined_cov_ = 0.5 * (combined_cov_ + combined_cov_.transpose());
     }
 
     // ============================================================
@@ -493,7 +629,7 @@ namespace rm_radarplugin
             nis_combined += mu_(j) * model_NIS_[j];
         }
 
-        // 首帧：直接将 baseline 初始化为当前 NIS 值
+        // 首帧直接将 baseline 初始化为当前 NIS 值
         // 避免从错误的初始值（如 0.1）慢慢收敛，导致 λ 长时间异常
         if (!nis_baseline_initialized_)
         {
@@ -538,17 +674,8 @@ namespace rm_radarplugin
     // Core idea:
     //   λ small (≤ LAMBDA_REF) → target is smooth → high p_stay
     //   λ large (>> LAMBDA_REF) → target is maneuvering → low p_stay
-    //
-    // p_stay = p_stay_max - (p_stay_max - p_stay_min) * σ(λ)
-    //   where σ(λ) = 1 / (1 + exp(-k*(λ/λ_ref - 2)))
-    //   is a smooth sigmoid that transitions around λ ≈ 2*λ_ref
-    //
-    // Additionally, the off-diagonal distribution is not uniform:
-    //   - From CV: more likely to switch to CA than CTRV
-    //   - From CA: more likely to switch to CV (decelerate) or CTRV
-    //   - From CTRV: more likely to switch to CV when λ is low
     // ============================================================
-    void AIMM::adaptTPM()
+    void AIMM::adaptTPM(const Eigen::Vector3d& innovation, const Eigen::Vector3d& vel)
     {
         // Sigmoid-based maneuver level ∈ [0, 1]
         // 0 = no maneuver, 1 = extreme maneuver
@@ -557,64 +684,87 @@ namespace rm_radarplugin
         double maneuver_level = 1.0 / (1.0 + std::exp(-sigmoid_k * (ratio - 2.0)));
         
         // Interpolate p_stay
-        double p_stay = p_stay_max_ - (p_stay_max_ - p_stay_min_) * maneuver_level;
+        double p_stay = p_stay_max_ - (p_stay_max_ - p_stay_min_) * maneuver_level; 
         double p_switch_total = 1.0 - p_stay;
+        double alpha =0.5;
+        double v_norm = vel.norm();
+        double inno_num = innovation.norm();
 
-        // Model indices: 0=CV, 1=CA, 2=CTRV (matching model_types_)
-        // Build asymmetric off-diagonal weights based on physical reasoning:
-        //
-        // When maneuvering (high λ):
-        //   CV should switch preferentially to CA (linear accel) or CTRV (turning)
-        //   CA should switch preferentially to CTRV (if turning detected)
-        //   CTRV should switch preferentially to CA (if linear accel)
-        //
-        // When smooth (low λ):
-        //   Everything tends back toward CV
-        
-        // off_weight[i][j] = unnormalized weight for switching from model i to model j
-        // (diagonal is excluded)
-        double off_weight[NUM_MODELS][NUM_MODELS];
-        
-        // Weight bias: how much to favor high-maneuver models when λ is large
-        double ca_bias = 1.0 + 2.0 * maneuver_level;    // CA gets more weight when maneuvering
-        double ctrv_bias = 1.0 + 1.5 * maneuver_level;  // CTRV gets some weight
-        double cv_bias = 1.0 + 2.0 * (1.0 - maneuver_level); // CV gets weight when smooth
-        
-        // From CV (index 0): switch to CA or CTRV
-        off_weight[0][0] = 0;
-        off_weight[0][1] = ca_bias;    // CV → CA
-        off_weight[0][2] = ctrv_bias;  // CV → CTRV
-        
-        // From CA (index 1): switch to CV or CTRV
-        off_weight[1][0] = cv_bias;    // CA → CV
-        off_weight[1][1] = 0;
-        off_weight[1][2] = ctrv_bias;  // CA → CTRV
-        
-        // From CTRV (index 2): switch to CV or CA
-        off_weight[2][0] = cv_bias;    // CTRV → CV
-        off_weight[2][1] = ca_bias;    // CTRV → CA
-        off_weight[2][2] = 0;
-
-        // Normalize off-diagonal per row and fill TPM
-        for (int i = 0; i < NUM_MODELS; ++i)
+        if(v_norm>1e-3 && inno_num>1e-3) // only compute alpha when both velocity and innovation are significant to avoid noise
         {
-            double row_sum = 0;
-            for (int j = 0; j < NUM_MODELS; ++j)
-            {
-                if (i != j) row_sum += off_weight[i][j];
-            }
-            
-            for (int j = 0; j < NUM_MODELS; ++j)
-            {
-                if (i == j)
-                    TPM_(i, j) = p_stay;
-                else
-                    TPM_(i, j) = p_switch_total * off_weight[i][j] / std::max(row_sum, 1e-10);
-            }
+            Eigen::Vector3d v_dir = vel.normalized(); // get direction of velocity
+            double e_tan_mag = std::abs(innovation.dot(v_dir)); // dot product gives magnitude of innovation in direction of motion
+            double e_normal_sq = std::max(0.0,innovation.squaredNorm() - e_tan_mag * e_tan_mag); // Pythagorean theorem to get magnitude of innovation perpendicular to motion
+            double e_normal_mag = std::sqrt(e_normal_sq);
+
+            alpha = e_normal_mag / inno_num; // 0 = purely tangential (straight), 1 = purely normal (turning)
         }
+
+
+        // double off_weight[NUM_MODELS][NUM_MODELS];
         
-        ROS_DEBUG_THROTTLE(1, "[AIMM] adaptTPM: lambda=%.2f, level=%.2f, p_stay=%.3f", 
-                           lambda_, maneuver_level, p_stay);
+        // // Weight bias: how much to favor high-maneuver models when λ is large
+        // double ca_bias = 1.0 + 2.0 * maneuver_level;    // CA gets more weight when maneuvering
+        // double ctrv_bias = 1.0 + 1.5 * maneuver_level;  // CTRV gets some weight
+        // double cv_bias = 1.0 + 2.0 * (1.0 - maneuver_level); // CV gets weight when smooth
+        
+        // // From CV (index 0): switch to CA or CTRV
+        // off_weight[0][0] = 0;
+        // off_weight[0][1] = ca_bias;    // CV → CA
+        // off_weight[0][2] = ctrv_bias;  // CV → CTRV
+        
+        // // From CA (index 1): switch to CV or CTRV
+        // off_weight[1][0] = cv_bias;    // CA → CV
+        // off_weight[1][1] = 0;
+        // off_weight[1][2] = ctrv_bias;  // CA → CTRV
+        
+        // // From CTRV (index 2): switch to CV or CA
+        // off_weight[2][0] = cv_bias;    // CTRV → CV
+        // off_weight[2][1] = ca_bias;    // CTRV → CA
+        // off_weight[2][2] = 0;
+
+        // // Normalize off-diagonal per row and fill TPM
+        // for (int i = 0; i < NUM_MODELS; ++i)
+        // {
+        //     double row_sum = 0;
+        //     for (int j = 0; j < NUM_MODELS; ++j)
+        //     {
+        //         if (i != j) row_sum += off_weight[i][j];
+        //     }
+            
+        //     for (int j = 0; j < NUM_MODELS; ++j)
+        //     {
+        //         if (i == j)
+        //             TPM_(i, j) = p_stay;
+        //         else
+        //             TPM_(i, j) = p_switch_total * off_weight[i][j] / std::max(row_sum, 1e-10);
+        //     }
+        // }
+
+
+        //TODO : 提取 2.0--maneuver_gain 权重系数 加入动态调参
+        // bias
+        double cv_bias = 1.0 + 2.0 * (1.0 - maneuver_level);   // CV gets more weight when motion is straight
+        double ca_bias = 1.0 + 2.0 * maneuver_level * (1.0 - alpha);   // CA gets more weight when motion is accelerating (tangential innovation)
+        double ctrv_bias = 1.0 + 2.0 * maneuver_level * alpha;  // CTRV gets some weight when maneuvering, regardless of innovation direction
+
+        Eigen::Matrix3d bias_matrix;
+        bias_matrix << 0, ca_bias, ctrv_bias,
+                       cv_bias, 0, ctrv_bias,
+                       cv_bias, ca_bias, 0;
+        
+        // normalized bias matrix
+        Eigen::Vector3d row_sums = bias_matrix.rowwise().sum().cwiseMax(Eigen::Vector3d::Constant(1e-10)); // add up as rows, and prevent division by zero
+        Eigen::Matrix3d normalized_bias = bias_matrix.array().colwise() / row_sums.array(); // normalize each row to sum to 1
+
+
+        TPM_ = normalized_bias * p_switch_total;
+        TPM_.diagonal() = Eigen::Vector3d::Constant(p_stay);
+
+
+       // TODO 修改debug 逻辑
+        // ROS_DEBUG_THROTTLE(1, "[AIMM] adaptTPM: lambda=%.2f, level=%.2f, p_stay=%.3f", 
+        //                    lambda_, maneuver_level, p_stay);
     }
 
     // ============================================================
@@ -665,7 +815,9 @@ namespace rm_radarplugin
         if (!initialized_) return;
 
         // Step 0a: Adapt TPM based on maneuver indicator from previous step
-        adaptTPM();
+        // Use innovation and velocity from the most probable model
+
+        adaptTPM(last_innovation_, last_velocity_);
         
         // Step 0b: Adapt process noise Q for each model
         adaptProcessNoise();
@@ -677,23 +829,11 @@ namespace rm_radarplugin
         for (int j = 0; j < NUM_MODELS; ++j)
         {
             Eigen::VectorXd current_state = filters_[j].getState();
-            Eigen::VectorXd new_state = fromUnifiedState(mixed_states_[j], model_types_[j], current_state);
-            
-            // Build covariance in model-specific dimensions
-            int state_dim = (int)current_state.size();
-            Eigen::MatrixXd new_P = Eigen::MatrixXd::Identity(state_dim, state_dim) * 0.01;
-            int dim = std::min(OUTPUT_DIM, state_dim);
-            new_P.topLeftCorner(dim, dim) = mixed_covs_[j].topLeftCorner(dim, dim);
-            
-            // Copy remaining diagonal from original P
-            Eigen::MatrixXd orig_P = filters_[j].getCovariance();
-            for (int k = dim; k < state_dim; ++k)
-            {
-                new_P(k, k) = orig_P(k, k);
-            }
+            Eigen::MatrixXd current_P = filters_[j].getCovariance();
+            Eigen::VectorXd mixed_state_model = fromUnifiedState(mixed_states_[j], model_types_[j], current_state);
+            Eigen::MatrixXd mixed_cov_model = fromUnifiedCovariance(mixed_states_[j], mixed_covs_[j], model_types_[j], current_P);
 
-            // Use lightweight setState to avoid re-initializing Q/R/weights
-            filters_[j].setState(new_state, new_P);
+            filters_[j].setState(mixed_state_model, mixed_cov_model);
         }
 
         // Step 2: Each model predicts independently
@@ -725,6 +865,14 @@ namespace rm_radarplugin
         // Step 3c: Update maneuver indicator λ (uses predicted state, BEFORE update)
         updateManeuverIndicator(z_meas);
 
+        // save cv model innovation as reference for next frame's interaction step
+        Eigen::VectorXd z_pred_cv;
+        Eigen::MatrixXd S_cv;
+        filters_[0].computeInnovation(z_meas, z_pred_cv, S_cv);
+        last_innovation_ = z_meas - z_pred_cv.head<3>();
+
+
+
         // Step 4: NOW do the actual UKF update for each model
         for (auto& f : filters_)
         {
@@ -733,6 +881,9 @@ namespace rm_radarplugin
 
         // Step 5: Combine estimates (uses post-update states)
         combineEstimates();
+
+        //save combined velocity as reference for next frame's interaction step
+        last_velocity_ = combined_state_.segment<3>(3);
 
         ROS_INFO_THROTTLE(2, "[AIMM] Active: %s (%.1f%%), lambda=%.6f, state=(%.3f,%.3f,%.3f)",
                         getActiveModelName().c_str(),

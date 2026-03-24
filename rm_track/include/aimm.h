@@ -31,7 +31,7 @@ namespace rm_radarplugin
  * Pipeline per timestep:
  *   0. Adapt TPM and Q based on previous-step maneuver indicator
  *   1. Interaction (mix states across models)
- *   2. Predict (each model independently, with adapted Q)
+ *   2. Predict (each model independently, wiggggggggggggggggth adapted Q)
  *   3. Update (each model independently)
  *   4. Compute model likelihoods
  *   5. Update model probabilities
@@ -137,8 +137,13 @@ private:
     double nis_baseline_alpha_{0.15};   // baseline EMA 速度（越大越快追踪）
     bool nis_baseline_initialized_{false};  // 首帧标志：第一次收到 NIS 时直接赋值
     
-    // Adaptive methods
-    void adaptTPM();             // Adjust TPM_ based on λ
+    // Adaptive
+    
+    Eigen::Vector3d last_innovation_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d last_velocity_ = Eigen::Vector3d::Zero();
+    void adaptTPM(const Eigen::Vector3d& innovation, const Eigen::Vector3d& vel); // Adjust TPM_ based on λ
+
+
     void adaptProcessNoise();    // Scale each filter's Q based on λ
     void updateManeuverIndicator(const Eigen::Vector3d& z_meas);
     double computeNIS(int model_idx, const Eigen::Vector3d& z_meas);
@@ -152,9 +157,18 @@ private:
 
     // Map model state to unified 6D state [x,y,z,vx,vy,vz]
     Eigen::VectorXd toUnifiedState(const Eigen::VectorXd& state, int model_type) const;
+    static Eigen::MatrixXd toUnifiedCovariance(const Eigen::VectorXd& x_model,
+                                               const Eigen::MatrixXd& P_model,
+                                               int model_type);
     // Map unified 6D state back to model-specific state
     Eigen::VectorXd fromUnifiedState(const Eigen::VectorXd& unified, int model_type, 
                                       const Eigen::VectorXd& original) const;
+
+    
+    static Eigen::MatrixXd fromUnifiedCovariance(const Eigen::VectorXd& unified_x,
+                                                 const Eigen::MatrixXd& P_uni,
+                                                 int model_type,
+                                                 const Eigen::MatrixXd& original_P);
 
     // Combined output
     Eigen::VectorXd combined_state_;
