@@ -29,8 +29,8 @@ namespace rm_radarplugin
          state_ = x0;    
          P_ = P0;        
          
-         state_dim_ = static_cast<int>(x0.size());
-         sigma_point_count_ = 2 * state_dim_ + 1;
+         state_dim_ = static_cast<int>(x0.size()); //get dim
+         sigma_point_count_ = 2 * state_dim_ + 1; // 2n+1个sigma点
 
         // Default UKF scaling if not set elsewhere
         lambda_ = 3.0 - state_dim_;
@@ -41,20 +41,21 @@ namespace rm_radarplugin
         weights_m_.resize(sigma_point_count_, 1);
         weights_c_.resize(sigma_point_count_, 1);
 
+        //0，0中心点权重
         weights_m_(0, 0) = lambda_ / (lambda_ + state_dim_);
         weights_c_(0, 0) = weights_m_(0, 0);
+        
+        // 其他sigma点权重
         const double w = 0.5 / (lambda_ + state_dim_);
         for (int i = 1; i < sigma_point_count_; ++i) {
             weights_m_(i, 0) = w;
             weights_c_(i, 0) = w;
         }
 
-        // Initialize Q_ and R_ matrices with proper dimensions
-        // Q_ is state_dim_ x state_dim_, R_ is measurement_dim x measurement_dim
-        // For now, initialize Q_ to state_dim_ and R_ to 3 (typical position measurement)
+        //噪声矩阵Q R初始化
         Q_ = Eigen::MatrixXd::Identity(state_dim_, state_dim_) * 0.01;
         Q_base_ = Q_;  // 基础Q矩阵初始化
-        meas_dim_ = 3;  // Default measurement dimension (x, y, z)
+        meas_dim_ = 3;  // 默认观察三个维度 (x, y, z)
         R_ = Eigen::MatrixXd::Identity(meas_dim_, meas_dim_) * 0.1;
         R_base_ = R_;  // 基础R矩阵初始化
 

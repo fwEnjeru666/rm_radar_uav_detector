@@ -10,6 +10,7 @@
 #include <ros/ros.h>
 #include <sstream>
 #include <iomanip>
+#include "rm_radar_msgs/ukf_debugger.h"
 
 namespace rm_radarplugin
 {
@@ -54,6 +55,13 @@ namespace rm_radarplugin
         double computeInnovation(const Eigen::VectorXd& z_meas,
                                  Eigen::VectorXd& z_pred_out,
                                  Eigen::MatrixXd& S_out) const;
+
+        // DEBUG STORAGE variables needed by AIMM package
+        double last_likelihood_;
+        double last_likelihood_exp_;
+        double last_nis_;
+        Eigen::VectorXd last_innovation_;
+        Eigen::MatrixXd last_S_;
 
     private:
         Eigen::VectorXd state_;  // State vector

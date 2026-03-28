@@ -59,15 +59,42 @@ namespace rm_radarplugin
         combined_cov_ = Eigen::MatrixXd::Identity(OUTPUT_DIM, OUTPUT_DIM);
 
         // Read adaptive parameters from parameter server
-        nh_.param("aimm/lambda_ema_alpha", lambda_ema_alpha_, 0.3);
-        nh_.param("aimm/p_stay_min", p_stay_min_, 0.60);
-        nh_.param("aimm/p_stay_max", p_stay_max_, 0.98);
-        nh_.param("aimm/p_stay_nominal", p_stay_nominal_, 0.90);
-        nh_.param("aimm/q_scale_max", q_scale_max_, 10.0);
+        // nh_.param("aimm/lambda_ema_alpha", lambda_ema_alpha_, 0.3);
+        // nh_.param("aimm/p_stay_min", p_stay_min_, 0.60);
+        // nh_.param("aimm/p_stay_max", p_stay_max_, 0.98);
+        // nh_.param("aimm/p_stay_nominal", p_stay_nominal_, 0.90);
+        // nh_.param("aimm/q_scale_max", q_scale_max_, 10.0);
+
+        // Setup Dynamic Reconfigure Server
+        ros::NodeHandle aimm_nh(nh_, "aimm");
+        aimm_cfg_server_ = std::make_shared<dynamic_reconfigure::Server<rm_track::aimmConfig>>(aimm_nh);
+        dynamic_reconfigure::Server<rm_track::aimmConfig>::CallbackType cb = 
+            boost::bind(&AIMM::aimmconfigCB, this, _1, _2);
+        aimm_cfg_server_->setCallback(cb);
 
         ROS_INFO("[AIMM] Created with %d models: CV, CA, CTRV", NUM_MODELS);
         ROS_INFO("[AIMM] Adaptive params: ema=%.2f, p_stay=[%.2f,%.2f], q_scale_max=%.1f",
                  lambda_ema_alpha_, p_stay_min_, p_stay_max_, q_scale_max_);
+    }
+
+    void AIMM::aimmconfigCB(rm_track::aimmConfig& config, uint32_t level)
+    {
+        //ema
+        lambda_ema_alpha_ = config.lambda_ema_alpha;
+        nis_baseline_alpha_ = config.nis_baseline_alpha;
+        
+        //adaptTPM
+        sigmoid_k_ = config.sigmoid_k;
+        maneuver_gain_ = config.maneuver_gain;
+
+        // Update TPM parameters
+        p_stay_min_ = config.p_stay_min;
+        p_stay_max_ = config.p_stay_max;
+        p_stay_nominal_ = config.p_stay_nominal;
+        q_scale_max_ = config.q_scale_max;
+        
+        ROS_INFO("[AIMM::Config] Parameters updated - ema: %.2f, p_stay_min: %.2f, p_stay_max: %.2f, p_stay_nom: %.2f, q_scale_max: %.1f",
+                 lambda_ema_alpha_, p_stay_min_, p_stay_max_, p_stay_nominal_, q_scale_max_);
     }
 
     void AIMM::initDynamicReconfigure()
@@ -488,20 +515,24 @@ namespace rm_radarplugin
         double det_S = S.determinant();
         if (det_S < 1e-30) det_S = 1e-30;
 
+        int meas_dim = z_meas.size();
+
         // Directly use the returned NIS for the exponent, avoiding redundant S.inverse() computation
         double exponent = -0.5 * nis;
         
+        // Save to internal state for debug topic later
+        filters_[model_idx].last_likelihood_exp_ = exponent;
+
         // Clamp exponent to prevent underflow
         exponent = std::max(exponent, -500.0);
 
-        //current only 3 dim
-        constexpr double LOG_2PI_D = 3.0 * 1.8378770664093453;
-
-        // Using log-likelihood for numerical stability, then exponentiate at the end
-        double log_likelihood = -0.5 * (LOG_2PI_D + std::log(det_S)) + exponent;
+        // Using standard computation instead of manually doing 2pi^-d/2 / sqrt(|S|)
+        double log_likelihood = -0.5 * (meas_dim * std::log(2.0 * M_PI) + std::log(det_S)) + exponent;
         double likelihood = std::exp(log_likelihood);
 
-        return std::max(likelihood, LIKELIHOOD_FLOOR);
+        filters_[model_idx].last_likelihood_ = std::max(likelihood, LIKELIHOOD_FLOOR);
+
+        return filters_[model_idx].last_likelihood_;
     }
 
     // ============================================================
@@ -592,7 +623,13 @@ namespace rm_radarplugin
         Eigen::MatrixXd S;
         double nis = filters_[model_idx].computeInnovation(z_meas, z_pred, S);
 
+        // Optional log for debugging NIS, can only retrieve innovation here for logging
+        // We only compute innovation to print it out
         Eigen::Vector3d innovation = z_meas - z_pred.head(3);
+
+        filters_[model_idx].last_innovation_ = innovation;
+        filters_[model_idx].last_S_ = S;
+        filters_[model_idx].last_nis_ = nis;
 
         ROS_INFO_THROTTLE(2, "[AIMM::NIS] model=%s z=(%.4f,%.4f,%.4f) pred=(%.4f,%.4f,%.4f) "
                           "innov=(%.4f,%.4f,%.4f) S_diag=(%.4f,%.4f,%.4f) NIS=%.6f",
@@ -680,8 +717,7 @@ namespace rm_radarplugin
         // Sigmoid-based maneuver level ∈ [0, 1]
         // 0 = no maneuver, 1 = extreme maneuver
         double ratio = lambda_ / LAMBDA_REF;  // 1.0 = nominal
-        double sigmoid_k = 2.0;  // steepness of transition
-        double maneuver_level = 1.0 / (1.0 + std::exp(-sigmoid_k * (ratio - 2.0)));
+        double maneuver_level = 1.0 / (1.0 + std::exp(-sigmoid_k_ * (ratio - 2.0)));
         
         // Interpolate p_stay
         double p_stay = p_stay_max_ - (p_stay_max_ - p_stay_min_) * maneuver_level; 
@@ -744,9 +780,9 @@ namespace rm_radarplugin
 
         //TODO : 提取 2.0--maneuver_gain 权重系数 加入动态调参
         // bias
-        double cv_bias = 1.0 + 2.0 * (1.0 - maneuver_level);   // CV gets more weight when motion is straight
-        double ca_bias = 1.0 + 2.0 * maneuver_level * (1.0 - alpha);   // CA gets more weight when motion is accelerating (tangential innovation)
-        double ctrv_bias = 1.0 + 2.0 * maneuver_level * alpha;  // CTRV gets some weight when maneuvering, regardless of innovation direction
+        double cv_bias = 1.0 + maneuver_gain_ * (1.0 - maneuver_level);   // CV gets more weight when motion is straight
+        double ca_bias = 1.0 + maneuver_gain_ * maneuver_level * (1.0 - alpha);   // CA gets more weight when motion is accelerating (tangential innovation)
+        double ctrv_bias = 1.0 + maneuver_gain_ * maneuver_level * alpha;  // CTRV gets some weight when maneuvering, regardless of innovation direction
 
         Eigen::Matrix3d bias_matrix;
         bias_matrix << 0, ca_bias, ctrv_bias,
@@ -920,6 +956,64 @@ namespace rm_radarplugin
     int AIMM::getModelType() const
     {
         return model_types_[getActiveModelIndex()];
+    }
+
+    rm_radar_msgs::aimm_debugger AIMM::getDebugMsg() const
+    {
+        rm_radar_msgs::aimm_debugger msg;
+
+        if (mu_.size() >= 3)
+        {
+            msg.mu_cv = mu_(0);
+            msg.mu_ca = mu_(1);
+            msg.mu_ctrv = mu_(2);
+        }
+
+        msg.lambda = lambda_;
+        
+        // Compute overall NIS raw for debugging info
+        double nis_combined = 0.0;
+        for (int j = 0; j < NUM_MODELS; ++j) {
+            nis_combined += mu_(j) * model_NIS_[j];
+        }
+        msg.nis_raw = nis_combined;
+        msg.nis_baseline = nis_baseline_;
+        
+        double alpha = std::max(1.0, lambda_ / LAMBDA_REF);
+        msg.q_scale_alpha = std::min(alpha, q_scale_max_);
+        msg.active_model = getActiveModelIndex();
+
+        std::vector<rm_radar_msgs::ukf_debugger*> ukf_msgs = {&msg.cv_debug, &msg.ca_debug, &msg.ctrv_debug};
+
+        for (int i = 0; i < NUM_MODELS; ++i)
+        {
+            ukf_msgs[i]->nis = filters_[i].last_nis_;
+            ukf_msgs[i]->likelihood = filters_[i].last_likelihood_;
+            ukf_msgs[i]->likelihood_exp = filters_[i].last_likelihood_exp_;
+            
+            // Vector conversions
+            Eigen::VectorXd state = filters_[i].getState();
+            ukf_msgs[i]->state.resize(state.size());
+            for(int k=0; k<state.size(); ++k) ukf_msgs[i]->state[k] = state(k);
+
+            Eigen::VectorXd innov = filters_[i].last_innovation_;
+            ukf_msgs[i]->innovation.resize(innov.size());
+            for(int k=0; k<innov.size(); ++k) ukf_msgs[i]->innovation[k] = innov(k);
+
+            Eigen::MatrixXd P = filters_[i].getCovariance();
+            ukf_msgs[i]->p_diag.resize(P.rows());
+            for(int k=0; k<P.rows(); ++k) ukf_msgs[i]->p_diag[k] = P(k,k);
+
+            Eigen::MatrixXd S = filters_[i].last_S_;
+            ukf_msgs[i]->s_diag.resize(S.rows());
+            for(int k=0; k<S.rows(); ++k) ukf_msgs[i]->s_diag[k] = S(k,k);
+
+            Eigen::MatrixXd Q = filters_[i].getProcessNoise();
+            ukf_msgs[i]->q_diag.resize(Q.rows());
+            for(int k=0; k<Q.rows(); ++k) ukf_msgs[i]->q_diag[k] = Q(k,k);
+        }
+
+        return msg;
     }
 
 }  // namespace rm_radarplugin

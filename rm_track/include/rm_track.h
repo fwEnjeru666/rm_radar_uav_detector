@@ -21,6 +21,9 @@
 #include "ukf.h"
 #include "aimm.h"
 #include "common.h"
+#include <visualization_msgs/MarkerArray.h>
+#include <rm_radar_msgs/UavDetectionArray.h>
+#include <rm_radar_msgs/aimm_debugger.h>
 
 namespace rm_radarplugin
 {
@@ -38,18 +41,21 @@ namespace rm_radarplugin
         void camDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);
         void lidarDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);  // LiDAR 检测回调
 
-    private:
+        // Debug publisher
+        ros::Publisher aimm_debug_pub_;
 
+    private:
+        ros::NodeHandle nh_;
         ros::Subscriber detection_sub_; // 订阅视觉
         ros::Subscriber lidar_detection_sub_;  // 订阅 LiDAR 检测
         ros::Publisher tracker_pub_;
         ros::CallbackQueue my_queue_;
 
         bool debug_mode_{false};
+        bool aimm_debug_mode_{false};
 
         //
         std::thread my_thread_;
-        ros::NodeHandle nh_;
 
         std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

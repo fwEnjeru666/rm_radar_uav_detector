@@ -52,6 +52,7 @@ namespace rm_radarplugin
         vision_timeout_ = nh_.param("vision_timeout", 0.3);
         
         tracker_pub_ = nh_.advertise<rm_msgs::TrackData>("/tracker/track_data", 1);
+        aimm_debug_pub_ = nh_.advertise<rm_radar_msgs::aimm_debugger>("/tracker/aimm_debug", 1);
 
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(ros::Duration(10));
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -73,6 +74,7 @@ namespace rm_radarplugin
         hit_threshold_ = config.hit_threshold;
         max_lost_count_ = config.max_lost_count;
         debug_mode_ = config.debug_mode;
+        aimm_debug_mode_ = config.aimm_debug_mode;
 
         // Handle AIMM toggle at runtime
         bool new_use_aimm = config.use_aimm;
@@ -578,6 +580,21 @@ namespace rm_radarplugin
 
     void Tracker::publishTrackerData()
     {
+        // publish AIMM debug data if enabled
+        if (use_aimm_ && aimm_debug_mode_)
+        {
+            rm_radar_msgs::aimm_debugger aimm_msg = aimm_.getDebugMsg();
+            aimm_msg.header.stamp = ros::Time::now();
+            aimm_msg.header.frame_id = target_frame_;
+            
+            // Sync internal UKF messages headers
+            aimm_msg.cv_debug.header = aimm_msg.header;
+            aimm_msg.ca_debug.header = aimm_msg.header;
+            aimm_msg.ctrv_debug.header = aimm_msg.header;
+
+            aimm_debug_pub_.publish(aimm_msg);
+        }
+
         //publish track data
         rm_msgs::TrackData track_data_msg;
         track_data_msg.header.stamp = current_time_;
@@ -610,7 +627,7 @@ namespace rm_radarplugin
         tracker_pub_.publish(track_data_msg);
 
         // Log AIMM model info if active
-        if (use_aimm_ && aimm_.isInitialized() && debug_mode_)
+        if (use_aimm_ && aimm_.isInitialized() && aimm_debug_mode_)
         {
             Eigen::VectorXd probs = aimm_.getModelProbabilities();
             ROS_INFO_THROTTLE(1, "[Tracker] AIMM probs: CV=%.1f%% CA=%.1f%% CTRV=%.1f%% | Active: %s | λ=%.2f",
@@ -645,4 +662,5 @@ namespace rm_radarplugin
         }
     }
     
+    // TODO : debug msg for TRACKER
 }

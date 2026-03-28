@@ -4,10 +4,11 @@
 #include <ros/ros.h>
 #include <vector>
 #include <string>
-#include <dynamic_reconfigure/server.h>
-#include <rm_track/ukfConfig.h>
 #include "ukf.h"
-#include "common.h"
+#include <rm_track/aimmConfig.h>
+#include <dynamic_reconfigure/server.h>
+#include <rm_radar_msgs/aimm_debugger.h>
+#include <rm_radar_msgs/ukf_debugger.h>
 
 namespace rm_radarplugin
 {
@@ -46,6 +47,7 @@ public:
     ~AIMM() = default;
 
     void initDynamicReconfigure();
+
     void initialize(const Eigen::Vector3d& z_meas);
 
     void setDt(double dt);
@@ -73,6 +75,9 @@ public:
         return UKF::getStateDimForModel(model_type);
     }
 
+    // Debug publishing
+    rm_radar_msgs::aimm_debugger getDebugMsg() const;
+
 private:
     static constexpr int NUM_MODELS = 3;  // CV, CA, CTRV
     
@@ -84,8 +89,12 @@ private:
     std::vector<int> model_types_;       // rm_track::CV, CA, CTRV
     std::vector<std::string> model_names_;
 
-    // Model probabilities μ_j (sum = 1)
-    Eigen::VectorXd mu_;
+    // Dynamic Reconfigure Server for AIMM parameters
+    std::shared_ptr<dynamic_reconfigure::Server<rm_track::aimmConfig>> aimm_cfg_server_;
+    void aimmconfigCB(rm_track::aimmConfig& config, uint32_t level);
+
+    // IMM Probabilities
+    Eigen::VectorXd mu_;           // model probabilities: [NUM_MODELS x 1]
 
     // Markov transition probability matrix π_ij  (ADAPTIVE — changes every step)
     Eigen::MatrixXd TPM_;
@@ -133,14 +142,16 @@ private:
     // This makes λ self-calibrating — if Q is large and NIS is always small,
     // the baseline drops accordingly, and only deviations FROM the baseline
     // trigger maneuver detection.
-    double nis_baseline_{0.0};          // 0 表示未初始化，首帧会一步校准
-    double nis_baseline_alpha_{0.15};   // baseline EMA 速度（越大越快追踪）
+    double nis_baseline_{};          // 0 表示未初始化，首帧会一步校准
+    double nis_baseline_alpha_{};   // baseline EMA 速度（越大越快追踪）
     bool nis_baseline_initialized_{false};  // 首帧标志：第一次收到 NIS 时直接赋值
     
     // Adaptive
     
     Eigen::Vector3d last_innovation_ = Eigen::Vector3d::Zero();
     Eigen::Vector3d last_velocity_ = Eigen::Vector3d::Zero();
+    double sigmoid_k_{};  // Sigmoid steepness for TPM adaptation
+    double maneuver_gain_{}; // Additional gain factor for TPM adaptation (optional, can be tuned to make TPM more or less sensitive to λ)
     void adaptTPM(const Eigen::Vector3d& innovation, const Eigen::Vector3d& vel); // Adjust TPM_ based on λ
 
 
