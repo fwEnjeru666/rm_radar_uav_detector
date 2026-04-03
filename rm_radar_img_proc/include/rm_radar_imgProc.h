@@ -86,9 +86,7 @@ namespace rm_radarplugin
         double width;
         cv::Point2d center_;
         double lw_rate_;
-        int id_;
         double confidence_;
-        double negative_confidence_;
         double area_;
         double parallel_dist_;
         double vertical_dist_;
@@ -106,7 +104,6 @@ namespace rm_radarplugin
             getVerticalDist();
             getArmorAngle();
             getArmorAnglePCA();
-            id_ = 0;
             confidence_ = 0;
         };
 
@@ -133,7 +130,7 @@ namespace rm_radarplugin
             angle_deg_ = a;
         }
 
-        // New: PCA major-axis heading (more stable under vertex jitter)
+        // PCA major-axis heading (more stable under vertex jitter)
         void getArmorAnglePCA()
         {
             if (bars_4points_.size() != 4) {
@@ -370,49 +367,35 @@ namespace rm_radarplugin
         void paramReconfig() override;
 
         ///draw
-        void drawBars(cv::Mat& image);
+        void drawBars(cv::Mat& image, std::vector<Bar>& bars);
         void drawArmors(cv::Mat& image, std::vector<Armor>& armors);
-        void drawArmors(cv::Mat& image) { drawArmors(image, armors_); }
         void drawArmorsVertexes(cv::Mat& image, std::vector<Armor>& armors);
-        void drawArmorsVertexes(cv::Mat& image) { drawArmorsVertexes(image, armors_); }
         bool drawWarp();
-        void drawTracker(cv::Mat& image);
+        void drawTracker(cv::Mat& image, cv::Point3f& tracked_position);
         void draw() override;
 
         // tracker callback
         void trackerCB(const rm_msgs::TrackData::ConstPtr& msg);
-        // project 3D point to 2D image
-        bool projectPoint3Dto2D(const geometry_msgs::Point& point_3d, cv::Point2d& point_2d);
-
         
         rm_vision::ProcessorInterface::Object getObj() override;
         void putObj() override;
 
     private:
+        void setDynamicReconfig();
+
         std::thread my_thread_;
         ros::NodeHandle nh_;
 
         //
         std::shared_ptr<image_transport::ImageTransport> it_;
-        image_transport::CameraSubscriber tele_cam_sub_;
-        image_transport::CameraSubscriber wide_cam_sub_;
+        image_transport::CameraSubscriber cam_sub_;
         image_transport::Publisher image_pub_;
 
         cv::Mat intrinsics_;
         cv::Mat dist_coeffs_;
         sensor_msgs::CameraInfoConstPtr camera_info_;
-
-        //cam_mode
-        bool is_tele_cam_{true}; // true: tele_cam, false: wide_cam
-        void tele_cam_callback(const sensor_msgs::ImageConstPtr& img, const sensor_msgs::CameraInfoConstPtr& info)
+        void cam_callback(const sensor_msgs::ImageConstPtr& img, const sensor_msgs::CameraInfoConstPtr& info)
         {
-            if(!is_tele_cam_) return;
-            ROS_INFO_ONCE("[cam_mode] tele camera mode");
-            if (!target_is_armor_)
-            {
-            //      ROS_INFO("not armor");
-            return;
-            }
             camera_info_ = info;
             target_array_.header = info->header;
             intrinsics_ = cv::Mat(3, 3, CV_64F, (void*)info->K.data()).clone();
@@ -424,36 +407,7 @@ namespace rm_radarplugin
             draw();
             // Note: target_array_ is already published inside findArmor(), no need to publish again
         }
-
-        void wide_cam_callback(const sensor_msgs::ImageConstPtr& img, const sensor_msgs::CameraInfoConstPtr& info)
-        {
-            if(is_tele_cam_) return;
-            ROS_INFO_ONCE("[cam_mode] wide camera mode");
-            if (!target_is_armor_)
-            {
-            //      ROS_INFO("not armor");
-            return;
-            }
-            camera_info_ = info;
-            target_array_.header = info->header;
-            intrinsics_ = cv::Mat(3, 3, CV_64F, (void*)info->K.data()).clone();
-            dist_coeffs_ = cv::Mat(info->D).clone();
-            boost::shared_ptr<cv_bridge::CvImage> temp =
-                boost::const_pointer_cast<cv_bridge::CvImage>(cv_bridge::toCvShare(img, "bgr8"));
-            draw();
-            target_array_.is_red = target_is_red_;
-            target_pub_.publish(target_array_);
-
-        }
-
-
-
-        void fpsCB(const sensor_msgs::ImageConstPtr& img, const sensor_msgs::CameraInfoConstPtr& info)
-        {
-            //todo
-        }
-
-         /// HSV
+        // HSV
         int red_h_min_low_{};
         int red_h_max_low_{};
         int red_h_min_high_{};
@@ -499,13 +453,6 @@ namespace rm_radarplugin
         /// armor warp
         double large_armor_ratio_{};
         std::vector<cv::Point2d> warp_reference_;
-        bool gamma_{};
-        cv::Mat look_up_table_ = cv::Mat::ones(1, 256, CV_8U);
-        double contrast_alpha_{};
-        double contrast_beta_{};
-        double gamma_y_{};
-        int warp_thresh_{};
-        bool rotate_{};
         /// warp : 32 * 28
         int warp_height_;
         int warp_width_;
@@ -524,11 +471,6 @@ namespace rm_radarplugin
         std::pair<int, float> result_{};
         double negative_confidence_{};
         std::vector<double> expand_ratio_{};
-        float id_confidence_{};
-        std::vector<int> input_shape_{};
-        bool use_id_cls_{};
-        float min_id_white_ratio_{};
-        float max_id_white_ratio_{};
         double firstnet_score_;
         std::vector<double> softmax_score_;
         ///
@@ -560,6 +502,7 @@ namespace rm_radarplugin
 
 
         cv::Mat raw_image_{};
+        cv::Mat gray_image_{};
         cv::Mat binary_image_{};
         cv::Mat morpro_image_{};
         cv::Mat warp_image_{};
@@ -572,17 +515,16 @@ namespace rm_radarplugin
         int target_option_{};
         bool target_is_red_{};
         int preprocess_method_{};
-
         //dynamic reconfig
-        dynamic_reconfigure::Server<rm_radar_img_proc::PreprocessConfig>* preprocess_cfg_srv_;
+        std::unique_ptr<dynamic_reconfigure::Server<rm_radar_img_proc::PreprocessConfig>> preprocess_cfg_srv_;
         dynamic_reconfigure::Server<rm_radar_img_proc::PreprocessConfig>::CallbackType preprocess_cfg_cb_;
         bool pre_process_dynamic_reconfig_initialized_ = false;
 
-        dynamic_reconfigure::Server<rm_radar_img_proc::ArmorConfig>* armor_cfg_srv_;
+        std::unique_ptr<dynamic_reconfigure::Server<rm_radar_img_proc::ArmorConfig>> armor_cfg_srv_;
         dynamic_reconfigure::Server<rm_radar_img_proc::ArmorConfig>::CallbackType armor_cfg_cb_;
         bool armor_dynamic_reconfig_initialized_ = false;
 
-        dynamic_reconfigure::Server<rm_radar_img_proc::DrawConfig>* draw_cfg_srv_;
+        std::unique_ptr<dynamic_reconfigure::Server<rm_radar_img_proc::DrawConfig>> draw_cfg_srv_;
         dynamic_reconfigure::Server<rm_radar_img_proc::DrawConfig>::CallbackType draw_cfg_cb_;
         ///
 
@@ -595,10 +537,7 @@ namespace rm_radarplugin
         ros::Subscriber track_sub_{};
         ros::Publisher track_data_pub_{};
 
-        bool target_is_armor_ = true;
-
-        //solve pnp
-        // 3D模型: 宽=bar长度(12mm), 高=两bar中心距(45mm)
+        //3d points
         double armor_half_w_ = 0.012 / 2.0;   // half bar length = 6mm
         double armor_half_h_ = 0.045 / 2.0;   // half inter-bar distance = 22.5mm
         std::vector<cv::Point3d> armor_3d_points_{
@@ -608,12 +547,9 @@ namespace rm_radarplugin
             cv::Point3d(-armor_half_w_,  armor_half_h_, 0)   // BL
         };
 
-        void solvePose(const Armor& armor, rm_radar_msgs::DroneDetection& target);
-        
-
         //tf
         std::shared_ptr<tf2_ros::Buffer> tf2_buffer_;
-        tf2_ros::TransformListener* tf_listener_{nullptr};
+        std::unique_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
 
     };
 }
