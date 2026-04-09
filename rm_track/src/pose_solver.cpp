@@ -15,7 +15,7 @@ namespace rm_radarplugin
         ROS_INFO("pose solver initialized");
 
         // --- dynamic reconfigure (EMA) ---
-        pose_solver_cfg_srv_ = new dynamic_reconfigure::Server<rm_track::pose_solverConfig>(nh_);
+        pose_solver_cfg_srv_ = std::make_unique<dynamic_reconfigure::Server<rm_track::pose_solverConfig>>(nh_);
         pose_solver_cfg_cb_ = boost::bind(&PoseSolver::poseSolverConfigCB, this, _1, _2);
         pose_solver_cfg_srv_->setCallback(pose_solver_cfg_cb_);
         // --- end dynamic reconfigure ---
@@ -32,8 +32,8 @@ namespace rm_radarplugin
             getReprojectParams();
         }
 
-        //track data sub
-        track_data_sub_ = nh_.subscribe("/processor/result_msg", 1, &PoseSolver::PoseSolverCB, this);
+        //track data sub: img_proc already publishes the best-confidence detection.
+        track_data_sub_ = nh_.subscribe("/processor/single_result_msg", 1, &PoseSolver::PoseSolverCB, this);
         
         //solved pose pub (发布给Tracker使用)
         solved_pose_pub_ = nh_.advertise<rm_radar_msgs::DroneDetection>("/pose_solver/solved_pose", 10);
@@ -88,14 +88,17 @@ namespace rm_radarplugin
         // PnP的tz和针孔估算差距太大 → PnP解不靠谱
         double tz_ratio = (tz_pinhole > 0.01) ? (tz / tz_pinhole) : 999.0;
 
-        ROS_INFO_THROTTLE(1, "[PoseSolver] PnP: t=(%.4f,%.4f,%.4f), reproj_err=%.1fpx, "
-                          "tz_pinhole=%.4f, tz_ratio=%.2f, pixel_h=%.1f, "
-                          "2D:(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)",
-                          tx, ty, tz, reproj_err, tz_pinhole, tz_ratio, pixel_h,
-                          armor_2d_points_[0].x, armor_2d_points_[0].y,
-                          armor_2d_points_[1].x, armor_2d_points_[1].y,
-                          armor_2d_points_[2].x, armor_2d_points_[2].y,
-                          armor_2d_points_[3].x, armor_2d_points_[3].y);
+        if (verbose_log_) 
+        {
+            ROS_INFO_THROTTLE(1, "[PoseSolver] PnP: t=(%.4f,%.4f,%.4f), reproj_err=%.1fpx, "
+                              "tz_pinhole=%.4f, tz_ratio=%.2f, pixel_h=%.1f, "
+                              "2D:(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)",
+                              tx, ty, tz, reproj_err, tz_pinhole, tz_ratio, pixel_h,
+                              armor_2d_points_[0].x, armor_2d_points_[0].y,
+                              armor_2d_points_[1].x, armor_2d_points_[1].y,
+                              armor_2d_points_[2].x, armor_2d_points_[2].y,
+                              armor_2d_points_[3].x, armor_2d_points_[3].y);
+        }
 
         // ---- 3. 过滤 ----
         if (std::isnan(tx) || std::isnan(ty) || std::isnan(tz))
@@ -113,15 +116,12 @@ namespace rm_radarplugin
             ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: tz=%.4f > 30.0", tz);
             return false;
         }
-        if (reproj_err > 10.0)
+        if (reproj_err > 30.0)
         {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: reproj_err=%.1fpx > 10.0 (bad PnP fit)", reproj_err);
+            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: reproj_err=%.1fpx > 30.0 (bad PnP fit)", reproj_err);
             return false;
         }
 
-        // tz_ratio gating strategy:
-        // - moderate mismatch: allow a pinhole fallback (keeps direction while fixing depth)
-        // - severe mismatch (like tz_ratio=0.42): reject entirely to avoid spikes
         constexpr double kTzRatioRejectLow  = 0.49;
         constexpr double kTzRatioRejectHigh = 1.50;
         constexpr double kTzRatioFallbackLow  = 0.85;
@@ -348,22 +348,20 @@ namespace rm_radarplugin
 
 
 
-    // pose solver callback - handles DroneDetectionArray
-    void PoseSolver::PoseSolverCB(const rm_radar_msgs::DroneDetectionArray::ConstPtr& detections)
+    // pose solver callback - handles single best detection from img_proc
+    void PoseSolver::PoseSolverCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection)
     {
-        if (detections->detections.empty()) {
-            ROS_WARN_THROTTLE(2, "[PoseSolver] Received empty DroneDetectionArray — imgproc found no armors this frame");
+        if (!detection)
+        {
+            ROS_WARN_THROTTLE(2, "[PoseSolver] Received null DroneDetection pointer");
             return;
         }
-        ROS_INFO_THROTTLE(2, "[PoseSolver] Received %lu detections from imgproc", detections->detections.size());
 
-        // 选择离图像中心最近的检测
-        const auto& best = *std::min_element(
-            detections->detections.begin(), detections->detections.end(),
-            [](const rm_radar_msgs::DroneDetection& a, const rm_radar_msgs::DroneDetection& b) {
-                return a.distance_to_image_center < b.distance_to_image_center;
-            });
-        processSingleDetection(best);
+        if (verbose_log_)
+        {
+            ROS_INFO_THROTTLE(2, "[PoseSolver] Received single detection from imgproc (confidence=%.3f)", detection->confidence);
+        }
+        processSingleDetection(*detection);
     }
 
     void PoseSolver::processSingleDetection(const rm_radar_msgs::DroneDetection& detection)
@@ -399,6 +397,8 @@ namespace rm_radarplugin
             
             // 发布求解后的位姿给Tracker
             rm_radar_msgs::DroneDetection solved_msg = detection;
+            solved_msg.is_cam_msg = true;
+            solved_msg.is_lidar_msg = false;
             solved_msg.pose.position.x = smoothed_t(0);
             solved_msg.pose.position.y = smoothed_t(1);
             solved_msg.pose.position.z = smoothed_t(2);
@@ -414,16 +414,16 @@ namespace rm_radarplugin
             solved_msg.centroid.z = smoothed_t(2);
             solved_pose_pub_.publish(solved_msg);
 
-            ROS_INFO_THROTTLE(1, "[PoseSolver] Published pose: raw(%.3f,%.3f,%.3f) -> %s(%.3f,%.3f,%.3f)",
-                raw_t(0), raw_t(1), raw_t(2),
-                use_ema_ ? "smoothed" : "raw",
-                smoothed_t(0), smoothed_t(1), smoothed_t(2));
+            if (verbose_log_) {
+                ROS_INFO_THROTTLE(1, "[PoseSolver] Published pose: raw(%.3f,%.3f,%.3f) -> %s(%.3f,%.3f,%.3f)",
+                    raw_t(0), raw_t(1), raw_t(2),
+                    use_ema_ ? "smoothed" : "raw",
+                    smoothed_t(0), smoothed_t(1), smoothed_t(2));
+            }
         }
         else
         {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] Pose solving failed for track id %d "
-                              "(2D pts: (%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f), cam_info=%s)",
-                              detection.id,
+            ROS_WARN_THROTTLE(1, "(2D pts: (%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f), cam_info=%s)",
                               armor_2d_points_.size() > 0 ? armor_2d_points_[0].x : -1,
                               armor_2d_points_.size() > 0 ? armor_2d_points_[0].y : -1,
                               armor_2d_points_.size() > 1 ? armor_2d_points_[1].x : -1,
@@ -438,7 +438,7 @@ namespace rm_radarplugin
 
     void PoseSolver::publishTransform(const rm_radar_msgs::DroneDetection& detection)
     {
-        std::string child_frame_id = "drone_" + std::to_string(detection.id);
+        std::string child_frame_id = "drone";
         try
         {
             geometry_msgs::TransformStamped tf;

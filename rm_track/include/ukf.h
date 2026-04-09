@@ -3,26 +3,23 @@
 #include <Eigen/Dense>
 #include <dynamic_reconfigure/server.h>
 
-// generated from cfg/ukf.cfg
 #include <rm_track/ukfConfig.h>
 #include "common.h"
 #include <cmath>
 #include <ros/ros.h>
 #include <sstream>
 #include <iomanip>
-#include "rm_radar_msgs/ukf_debugger.h"
 
+#include "motion_models_define.h"
 namespace rm_radarplugin
 {
     class UKF
     {
     public:
         UKF() = default;
-        explicit UKF(ros::NodeHandle& nh);
-        ~UKF() = default;
-
-        void initDynamicReconfigure();  // 延迟初始化 dynamic_reconfigure server
-        void initialize(const Eigen::VectorXd& x0, const Eigen::MatrixXd& P0);
+        explicit UKF(ros::NodeHandle& nh, std::shared_ptr<BaseModel> model);
+        void initialize(const Eigen::Vector3d& z_meas);
+        std::shared_ptr<BaseModel> getModel() const { return model_;}
         void ukf_params_init(rm_track::ukfConfig& config, uint32_t level);
         void predict();
         void update(const Eigen::VectorXd& z_meas);
@@ -34,16 +31,19 @@ namespace rm_radarplugin
         Eigen::MatrixXd getMeasurementNoise() const { return R_; }
         Eigen::MatrixXd getBaseMeasurementNoise() const { return R_base_; }
 
+        // Set a new motion model
+        void setModel(std::shared_ptr<BaseModel> model);
+
+
+        // Q scale interface for AIMM adaptive scaling
+        void setQScale(double scale) { q_scale_ = scale; }
+        double getQScale() const { return q_scale_; }
+
         // Lightweight state injection for AIMM interaction step (no re-init of Q/R/weights)
         void setState(const Eigen::VectorXd& x, const Eigen::MatrixXd& P) {
             state_ = x;
             P_ = P;
         }
-
-        // Q matrix access for AIMM adaptive scaling
-        Eigen::MatrixXd getProcessNoise() const { return Q_; }
-        Eigen::MatrixXd getBaseProcessNoise() const { return Q_base_; }
-        void setProcessNoise(const Eigen::MatrixXd& Q) { Q_ = Q; }
 
         // Access the innovation covariance S_ from last update (for AIMM likelihood)
         Eigen::MatrixXd getInnovationCovariance() const { return S_; }
@@ -56,18 +56,18 @@ namespace rm_radarplugin
                                  Eigen::VectorXd& z_pred_out,
                                  Eigen::MatrixXd& S_out) const;
 
-        // DEBUG STORAGE variables needed by AIMM package
-        double last_likelihood_;
-        double last_likelihood_exp_;
-        double last_nis_;
-        Eigen::VectorXd last_innovation_;
-        Eigen::MatrixXd last_S_;
+        void ukfconfigCB(rm_track::ukfConfig& config, uint32_t level);
+        
+        // Debug helper function
+        void printQRMatrices();
+        void printQRMatricesThrottled();
 
     private:
+        double q_scale_{1.0}; // Adaptive process noise multiplier
+        std::shared_ptr<BaseModel> model_;
+
         Eigen::VectorXd state_;  // State vector
         Eigen::MatrixXd P_;      // State covariance matrix
-        Eigen::MatrixXd Q_;      // Process noise covariance matrix (may be scaled by AIMM)
-        Eigen::MatrixXd Q_base_; // Base process noise from dynamic_reconfigure (before AIMM scaling)
         Eigen::MatrixXd R_;      // Measurement noise covariance matrix (per-frame, may be scaled)
         Eigen::MatrixXd R_base_; // Base measurement noise from dynamic_reconfigure
 
@@ -82,18 +82,8 @@ namespace rm_radarplugin
         Eigen::MatrixXd K_;        // Kalman gain matrix
 
         ros::NodeHandle nh_;
-        //Q
-        double q_pos_{};
-        double q_vel_xy_{};
-        double q_vel_z_{};
-        double q_acc_xy_{};
-        double q_acc_z_{};
-        double q_yaw_{};
-        double q_vyaw_{};
-        double q_r_{};
-        double q_dz_{};
 
-        //R 
+        // R 
         double r_pos_xy_{};
         double r_pos_z_{};
         double r_yaw_{};
@@ -109,51 +99,24 @@ namespace rm_radarplugin
         Eigen::MatrixXd weights_m_{};
         Eigen::MatrixXd weights_c_{};
 
-
+        void weightsInit(std::shared_ptr<BaseModel> model);
         void generateSigmaPoints();
-        void predictSigmaPoints(const Eigen::MatrixXd& sigma_points, Eigen::MatrixXd& predicted_sigma_points);
-
-
-        Eigen::VectorXd processModel(const Eigen::VectorXd& x);
-        int model_type_{};
-
-        Eigen::VectorXd computeMean(const Eigen::MatrixXd& weights, const Eigen::MatrixXd& sigma_points, int dim);
-        Eigen::MatrixXd computeCovariance(const Eigen::MatrixXd& weights, const Eigen::MatrixXd& sigma_points, const Eigen::VectorXd& mean, int dim, int angle_idx = -1);
-        void normalizeAngle(double& angle)
+        
+        Eigen::VectorXd computeMean(const Eigen::MatrixXd& weights, const Eigen::MatrixXd& sigma_points, int dim) const;
+        Eigen::MatrixXd computeCovariance(const Eigen::MatrixXd& weights, const Eigen::MatrixXd& sigma_points, const Eigen::VectorXd& mean, int dim, int angle_idx = -1) const;
+        void normalizeAngle(double& angle) const
         {
             while (angle > M_PI) angle -= 2. * M_PI;
             while (angle < -M_PI) angle += 2. * M_PI;
         }
 
-
         //debugger
         bool debug_mode_ = false;
         double NIS_{};
 
-
         //dynamic reconfigure
-        dynamic_reconfigure::Server<rm_track::ukfConfig>* ukf_cfg_srv_ = nullptr;
+        std::unique_ptr<dynamic_reconfigure::Server<rm_track::ukfConfig>> ukf_cfg_srv_;
         dynamic_reconfigure::Server<rm_track::ukfConfig>::CallbackType ukf_cfg_cb_;
         bool ukf_initialized_ = false;
-        void ukfconfigCB(rm_track::ukfConfig& config, uint32_t level);
-        
-        // Debug helper function
-        void printQRMatrices();
-        void printQRMatricesThrottled();
-
-    public:
-        // 获取当前模型类型，供外部初始化时使用
-        int getModelType() const { return model_type_; }
-        
-        // 获取模型对应的状态维度
-        static int getStateDimForModel(int model_type) {
-            switch(model_type) {
-                case rm_track::CV: return 6;   // [x, y, z, vx, vy, vz]
-                case rm_track::CA: return 9;   // [x, y, z, vx, vy, vz, ax, ay, az]
-                case rm_track::CTRV: return 6; // [x, y, z, v, yaw, yaw_rate]
-                default: return 6;
-            }
-        }
-
     };
 }

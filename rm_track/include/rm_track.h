@@ -4,11 +4,13 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <sensor_msgs/CameraInfo.h>
 #include <rm_radar_msgs/DroneDetection.h>
 #include <rm_radar_msgs/DroneTrackData.h>
 #include <rm_msgs/TrackData.h>
 #include <thread>
 #include <mutex>
+#include <array>
 #include <nodelet/nodelet.h>
 #include <pluginlib/class_loader.h>
 #include <pluginlib/class_list_macros.h>
@@ -30,7 +32,7 @@ namespace rm_radarplugin
     class Tracker : public nodelet::Nodelet
     {
     public:
-        Tracker() = default;
+        Tracker();
         ~Tracker() 
         {
             if (my_thread_.joinable())
@@ -38,6 +40,7 @@ namespace rm_radarplugin
         };
         void onInit();
         void initialize(ros::NodeHandle &nh);
+        void camInfoCB(const sensor_msgs::CameraInfoConstPtr& cam_info);
         void camDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);
         void lidarDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);  // LiDAR 检测回调
 
@@ -45,7 +48,11 @@ namespace rm_radarplugin
         ros::Publisher aimm_debug_pub_;
 
     private:
+        rm_msgs::TrackData target_state;
+        Eigen::VectorXd x_state_;
+
         ros::NodeHandle nh_;
+        ros::Subscriber cam_info_sub_;
         ros::Subscriber detection_sub_; // 订阅视觉
         ros::Subscriber lidar_detection_sub_;  // 订阅 LiDAR 检测
         ros::Publisher tracker_pub_;
@@ -53,6 +60,7 @@ namespace rm_radarplugin
 
         bool debug_mode_{false};
         bool aimm_debug_mode_{false};
+        bool state_log_mode_{true};
 
         //
         std::thread my_thread_;
@@ -65,24 +73,33 @@ namespace rm_radarplugin
         ros::Time last_time_;
         ros::Time current_time_;
 
-        //ukf
-        UKF ukf_;
-        void init_ukf(const Eigen::Vector3d& z_meas);
+        // UKF for pure UKF mode
+        std::shared_ptr<UKF> ukf_;
+        int pure_ukf_model_idx_ = 0; // Index for the model used in pure UKF mode
+        int pure_ukf_model_selector_ = 0; // Dynamic reconfigure selector value (CV/CA/CTRV/SINGER)
+        int resolvePureUkfModelIndex(int selector, bool warn_if_fallback) const;
 
         // AIMM (Adaptive Interacting Multiple Model)
-        AIMM aimm_;
+        std::shared_ptr<AIMM> aimm_;
         bool use_aimm_{false};
-        void init_aimm(const Eigen::Vector3d& z_meas);
 
-        // Unified filter interface helpers
+        // Model Management
+        std::shared_ptr<model_register> model_manager_;
+        std::vector<std::shared_ptr<BaseModel>> loaded_models_;
+        std::vector<std::string> loaded_model_names_; // Unified filter interface helpers
         bool filterInitialized() const;
         void filterSetDt(double dt);
         void filterPredict();
-        void filterUpdate(const Eigen::Vector3d& z_meas);
+        void filterUpdate(const Eigen::VectorXd& z_meas);
         Eigen::VectorXd filterGetState() const;
         Eigen::MatrixXd filterGetBaseMeasurementNoise() const;
         void filterSetMeasurementNoise(const Eigen::MatrixXd& R);
         bool filterIsInitialized() const;
+        bool validatePixelMeasurement(const Eigen::VectorXd& z_meas,
+                          double distance,
+                          double& nis,
+                          double& rmse,
+                          double& rmse_gate) const;
 
         //pub
         rm_msgs::TrackData track_data_msg_;
@@ -90,6 +107,9 @@ namespace rm_radarplugin
         //transform
 
         bool transform2Odom(const std_msgs::Header& header, const Eigen::Vector3d& p_cam, Eigen::Vector3d& p_odom);
+        bool updateProjectionExtrinsic(const std_msgs::Header& header);
+        void loadProjectionParams();
+        void applyProjectionParamsToModels();
         
 
         //state
@@ -98,26 +118,34 @@ namespace rm_radarplugin
         int lost_count_{};
         int hit_threshold_{};
         int max_lost_count_{};
+        int cam_hitcount_{};
+        int cam_lostcount_{};
+        int lidar_hitcount_{};
+        int lidar_lostcount_{};
+        int cam_detected_count_{};
+        int lidar_detected_count_{};
+        int cam_lost_counter_{};
+        int lidar_lost_counter_{};
+        bool tracking_with_cam_{true};
 
         // tracking state - 初始状态 LOST
         rm_track::TrackState track_state_{rm_track::LOST};
         bool is_tracking_{false};
-        uint8_t track_id_{0};
 
         // time + publisher already declared above
 
         //state handling
-        void handleDetectingState(bool has_data, const Eigen::Vector3d& z_meas, double dt);
-        void handleTrackingState(bool has_data, const Eigen::Vector3d& z_meas, double dt);
-        void handleTempLostState(bool has_data, const Eigen::Vector3d& z_meas, double dt);
-        void handleLostState(bool has_data, const Eigen::Vector3d& z_meas, double dt);
+        void handleDetectingState(bool has_data, bool is_cam_msg, bool is_lidar_msg, const Eigen::VectorXd& z_meas, const Eigen::Vector3d& z_init, double dt);
+        void handleTrackingState(bool has_data, bool is_cam_msg, bool is_lidar_msg, const Eigen::VectorXd& z_meas, const Eigen::Vector3d& z_init, double dt);
+        void handleTempLostState(bool has_data, bool is_cam_msg, bool is_lidar_msg, const Eigen::VectorXd& z_meas, const Eigen::Vector3d& z_init, double dt);
+        void handleLostState(bool has_data, bool is_cam_msg, bool is_lidar_msg, const Eigen::VectorXd& z_meas, const Eigen::Vector3d& z_init, double dt);
 
         void publishTrackerData();
-        void processTracking(bool has_data, const Eigen::Vector3d& z_meas, double dt);
+        void processTracking(bool has_data, bool is_cam_msg, bool is_lidar_msg, const Eigen::VectorXd& z_meas, const Eigen::Vector3d& z_init, double dt);
         // init_ukf already declared above
 
         //dynamic reconfigure
-        dynamic_reconfigure::Server<rm_track::trackConfig>* track_cfg_srv_;
+        std::unique_ptr<dynamic_reconfigure::Server<rm_track::trackConfig>> track_cfg_srv_;
         dynamic_reconfigure::Server<rm_track::trackConfig>::CallbackType track_cfg_cb_;
         void trackconfigCB(rm_track::trackConfig& config, uint32_t level);
 
@@ -132,9 +160,21 @@ namespace rm_radarplugin
         // LiDAR 检测融合相关
         rm_radar_msgs::DroneDetection::ConstPtr latest_lidar_detection_;
         ros::Time last_lidar_time_;
-        ros::Time last_vision_time_;
+        ros::WallTime last_lidar_receive_time_;
+        ros::WallTime last_cam_receive_time_;
         double lidar_timeout_{0.5};  // LiDAR 检测超时时间 (秒)
         double vision_timeout_{0.3}; // 视觉检测超时时间 (秒)
+        double pixel_noise_u_{4.0};
+        double pixel_noise_v_{4.0};
+        bool force_3d_measurement_{false};
+        bool enable_pixel_gating_{true};
+        bool enable_3d_fallback_{true};
+        double pixel_nis_gate_{40.0};
+        double pixel_reproj_rmse_gate_near_{12.0};
+        double pixel_reproj_rmse_gate_mid_{20.0};
+        double pixel_reproj_rmse_gate_far_{30.0};
+        double pixel_gate_distance_near_{8.0};
+        double pixel_gate_distance_far_{18.0};
         bool use_lidar_fusion_{true};  // 是否启用 LiDAR 融合
         std::mutex lidar_mutex_;
 
@@ -148,6 +188,27 @@ namespace rm_radarplugin
         ros::Timer detection_timer_;  // 检测定时器，用于触发融合
         void detectionCB(const ros::TimerEvent& event);
 
+        //model manager
+        void initializeFilters();
+
+        struct ProjectionParams
+        {
+            double fx{1.0};
+            double fy{1.0};
+            double cx{0.0};
+            double cy{0.0};
+            double armor_width{0.135};
+            double armor_height{0.055};
+        } projection_params_;
+        std::mutex projection_mutex_;
+        std::string cam_info_topic_{"/hk_camera/camera_info"};
+        bool has_camera_info_{false};
+        std::array<double, 9> camera_k_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+        std::vector<double> camera_d_;
+
+        // Last known valid position and velocity for LOST state
+        Eigen::Vector3d last_known_position_{0, 0, 0};
+        Eigen::Vector3d last_known_velocity_{0, 0, 0};
 
 
     };

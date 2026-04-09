@@ -1,7 +1,7 @@
 #include "dbscan.h"
 
 #include <algorithm>
-#include <cmath>
+#include <boost/make_shared.hpp>
 
 namespace rm_radar_lidar_detector
 {
@@ -14,7 +14,7 @@ namespace rm_radar_lidar_detector
 
     void DBSCAN::buildOctree()
     {
-        cloud_.reset(new pcl::PointCloud<PointT>);
+        cloud_ = boost::make_shared<pcl::PointCloud<PointT>>();
         cloud_->reserve(points_.size());
         
         for (const auto& p : points_) {
@@ -27,29 +27,19 @@ namespace rm_radar_lidar_detector
         }
     }
 
-    double DBSCAN::getDistance(const ClusterPoint& p1, const ClusterPoint& p2)
+    const std::vector<int>& DBSCAN::regionQuery(int point_idx)
     {
-        float dx = p1.x - p2.x;
-        float dy = p1.y - p2.y;
-        float dz = p1.z - p2.z;
-        return std::sqrt(dx*dx + dy*dy + dz*dz);
-    }
-
-    std::vector<int> DBSCAN::regionQuery(int point_idx)
-    {
-        std::vector<int> neighbors;
+        nn_distances_buffer_.clear();
+        nn_neighbors_buffer_.clear();
         
         if (cloud_->empty() || point_idx >= static_cast<int>(cloud_->size())) {
-            return neighbors;
+            return nn_neighbors_buffer_;
         }
         
         PointT search_point = cloud_->points[point_idx];
-        std::vector<int> indices;
-        std::vector<float> distances;
-        
-        octree_.radiusSearch(search_point, eps_, indices, distances);
-        
-        return indices;
+
+        octree_.radiusSearch(search_point, eps_, nn_neighbors_buffer_, nn_distances_buffer_);
+        return nn_neighbors_buffer_;
     }
 
     int DBSCAN::expandCluster(int point_idx, int cluster_id)
@@ -64,17 +54,19 @@ namespace rm_radar_lidar_detector
         // All points in seeds are density-reachable from point_idx
         for (int seed_idx : seeds) {
             points_[seed_idx].cluster_id = cluster_id;
+            points_[seed_idx].visited = true;
         }
-        
-        // Remove point_idx from seeds
-        seeds.erase(std::remove(seeds.begin(), seeds.end(), point_idx), seeds.end());
         
         // Process seeds
         while (!seeds.empty()) {
             int current_point = seeds.back();
             seeds.pop_back();
+
+            if (current_point == point_idx) {
+                continue;
+            }
             
-            std::vector<int> result = regionQuery(current_point);
+            const std::vector<int>& result = regionQuery(current_point);
             
             if (result.size() >= minPts_) {
                 for (int result_idx : result) {
@@ -104,14 +96,13 @@ namespace rm_radar_lidar_detector
         }
         
         cluster_id_ = 0;
-        
         for (size_t i = 0; i < points_.size(); ++i) {
-            if (points_[i].visited) {
+            if (points_[i].cluster_id != 0) {
                 continue;
             }
             
             points_[i].visited = true;
-            std::vector<int> neighbors = regionQuery(i);
+            const std::vector<int>& neighbors = regionQuery(static_cast<int>(i));
             
             if (neighbors.size() < minPts_) {
                 points_[i].cluster_id = -1;  // Noise
@@ -123,13 +114,27 @@ namespace rm_radar_lidar_detector
         
         // Build cluster point clouds
         clusters_.clear();
+        std::vector<size_t> cluster_sizes(static_cast<size_t>(cluster_id_ + 1), 0);
+
         for (size_t i = 0; i < points_.size(); ++i) {
             int cid = points_[i].cluster_id;
             if (cid > 0) {
-                if (clusters_.find(cid) == clusters_.end()) {
-                    clusters_[cid].reset(new pcl::PointCloud<pcl::PointXYZ>);
-                }
-                clusters_[cid]->push_back(pcl::PointXYZ(points_[i].x, points_[i].y, points_[i].z));
+                ++cluster_sizes[static_cast<size_t>(cid)];
+            }
+        }
+
+        clusters_.resize(static_cast<size_t>(cluster_id_ + 1));
+        for (int cid = 1; cid <= cluster_id_; ++cid) {
+            auto cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+            cloud->reserve(cluster_sizes[static_cast<size_t>(cid)]);
+            clusters_[static_cast<size_t>(cid)] = cloud;
+        }
+
+        for (size_t i = 0; i < points_.size(); ++i) {
+            int cid = points_[i].cluster_id;
+            if (cid > 0) {
+                clusters_[static_cast<size_t>(cid)]->push_back(
+                    pcl::PointXYZ(points_[i].x, points_[i].y, points_[i].z));
             }
         }
         

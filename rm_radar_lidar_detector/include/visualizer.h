@@ -13,8 +13,10 @@
 
 #include <Eigen/Dense>
 #include <string>
+#include <vector>
 
 #include "types.h"
+#include "cluster_filter.h"
 
 namespace rm_radar_lidar_detector
 {
@@ -73,6 +75,13 @@ class Visualizer {
             const std::string& frame_id,
             double scale = 0.3,
             double lifetime = 0.2);
+
+        static visualization_msgs::MarkerArray createClusterDebugMarkerArray(
+            const std::vector<ClusterDebugInfo>& debug_infos,
+            const std::string& frame_id,
+            const ros::Time& stamp,
+            double box_lifetime = 0.25,
+            double text_lifetime = 0.25);
         
         static void broadcastTF(const Eigen::Vector3f& position,
                                 const Eigen::Quaternionf& orientation,

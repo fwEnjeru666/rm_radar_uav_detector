@@ -8,51 +8,22 @@
 #include <rm_track/aimmConfig.h>
 #include <dynamic_reconfigure/server.h>
 #include <rm_radar_msgs/aimm_debugger.h>
-#include <rm_radar_msgs/ukf_debugger.h>
 
 namespace rm_radarplugin
 {
 
-/**
- * @brief AIMM - Adaptive Interacting Multiple Model estimator
- * 
- * Key difference from standard IMM: the transition probability matrix (TPM)
- * and process noise (Q) are **not fixed constants**. They are adapted in
- * real-time based on a maneuver indicator λ(k) derived from the combined
- * normalised innovation squared (NIS).
- * 
- * Adaptive mechanisms:
- *   A) TPM adaptation — when λ is large (aggressive maneuver), p_stay drops
- *      and switching probabilities toward CA/CTRV increase. When λ is small
- *      (smooth motion), p_stay rises and the system prefers CV.
- *   B) Q scaling — each model's process noise Q is scaled by a factor
- *      α(k) = clamp(λ/λ_ref, 1, α_max) so that filters open up during
- *      maneuvers and tighten during steady motion.
- * 
- * Pipeline per timestep:
- *   0. Adapt TPM and Q based on previous-step maneuver indicator
- *   1. Interaction (mix states across models)
- *   2. Predict (each model independently, wiggggggggggggggggth adapted Q)
- *   3. Update (each model independently)
- *   4. Compute model likelihoods
- *   5. Update model probabilities
- *   6. Combine output state as probability-weighted sum
- *   7. Update maneuver indicator for next step
- */
 class AIMM
 {
 public:
     AIMM() = default;
-    explicit AIMM(ros::NodeHandle& nh);
+    explicit AIMM(ros::NodeHandle& nh, const std::vector<std::shared_ptr<BaseModel>>& models);;
     ~AIMM() = default;
-
-    void initDynamicReconfigure();
 
     void initialize(const Eigen::Vector3d& z_meas);
 
     void setDt(double dt);
     void predict();
-    void update(const Eigen::Vector3d& z_meas);
+    void update(const Eigen::VectorXd& z_meas);
 
     Eigen::VectorXd getState() const;
     Eigen::MatrixXd getCovariance() const;
@@ -65,34 +36,29 @@ public:
 
     // Model info
     int getActiveModelIndex() const;
-    std::string getActiveModelName() const;
     Eigen::VectorXd getModelProbabilities() const { return mu_; }
-    int getModelType() const;  // returns type of most probable model
     double getManeuverIndicator() const { return lambda_; }
-
-    // For compatibility with existing code
-    static int getStateDimForModel(int model_type) {
-        return UKF::getStateDimForModel(model_type);
-    }
-
-    // Debug publishing
     rm_radar_msgs::aimm_debugger getDebugMsg() const;
-
+    double computeInnovation(const Eigen::VectorXd& z_meas,
+                             Eigen::VectorXd& z_pred_out,
+                             Eigen::MatrixXd& S_out) const;
 private:
-    static constexpr int NUM_MODELS = 3;  // CV, CA, CTRV
+    int num_models_ {0};
     
     ros::NodeHandle nh_;
     bool initialized_ = false;
 
     // Individual UKF filters
-    std::vector<UKF> filters_;
-    std::vector<int> model_types_;       // rm_track::CV, CA, CTRV
+    std::vector<std::shared_ptr<UKF>> filters_;
     std::vector<std::string> model_names_;
 
     // Dynamic Reconfigure Server for AIMM parameters
     std::shared_ptr<dynamic_reconfigure::Server<rm_track::aimmConfig>> aimm_cfg_server_;
     void aimmconfigCB(rm_track::aimmConfig& config, uint32_t level);
 
+    std::string getActiveModelName() const;
+
+    // Adaptive params matching dynamic_reconfigure
     // IMM Probabilities
     Eigen::VectorXd mu_;           // model probabilities: [NUM_MODELS x 1]
 
@@ -106,15 +72,25 @@ private:
     // Mixing probabilities μ_{i|j}
     Eigen::MatrixXd mixing_probs_;
 
-    // Output state dimension (unified to 6: [x, y, z, vx, vy, vz])
-    static constexpr int OUTPUT_DIM = 6;
+    // Current smoothed maneuver indicator
+    double lambda_ = 1.0;
+    // Parameter for alpha limit
+    double LAMBDA_REF = 5.0;
+
+    int OUTPUT_DIM = 9;
+
+    // Adaptive maneuver constants base
+    double prob_maneuver_detection_ = 0.5;
+    double prob_maneuver_confirmation_ = 0.5;
+    double prob_maneuver_switch_ = 0.5;
+    double prob_mix_switch_ca_ = 0.5;
+    double prob_mix_switch_ctrv_ = 0.5;
 
     // =================== Adaptive machinery ===================
     
     // Maneuver indicator λ(k): ratio of current NIS to baseline NIS
     // λ ≈ 1.0 → smooth motion (NIS matches expectation)
     // λ >> 1.0 → aggressive maneuver (NIS spikes above baseline)
-    double lambda_{0.0};
     
     // Exponential moving average smoothing factor for λ
     // λ(k) = α_ema * NIS_raw + (1 - α_ema) * λ(k-1)
@@ -123,7 +99,7 @@ private:
     // Reference λ: the expected λ under H0 (no maneuver)
     // Since λ is now a NIS ratio (NIS_current / NIS_baseline),
     // the expected value under no maneuver is 1.0
-    static constexpr double LAMBDA_REF = 1.0;
+    double lambda_ref_{1.0};  // Expected λ when model matches well (NIS ≈ baseline)
     
     // TPM adaptation parameters
     double p_stay_min_{0.60};    // minimum stay probability (extreme maneuver)
@@ -132,8 +108,6 @@ private:
     
     // Q scaling parameters
     double q_scale_max_{10.0};   // max Q multiplier during heavy maneuver
-    // Q_base_[i] stores the original Q from dynamic_reconfigure for each filter
-    std::vector<Eigen::MatrixXd> Q_base_;
     
     // Maneuver detection: per-model NIS from last update
     std::vector<double> model_NIS_;
@@ -148,7 +122,7 @@ private:
     
     // Adaptive
     
-    Eigen::Vector3d last_innovation_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d last_innovation_{Eigen::Vector3d::Zero()};
     Eigen::Vector3d last_velocity_ = Eigen::Vector3d::Zero();
     double sigmoid_k_{};  // Sigmoid steepness for TPM adaptation
     double maneuver_gain_{}; // Additional gain factor for TPM adaptation (optional, can be tuned to make TPM more or less sensitive to λ)
@@ -156,30 +130,14 @@ private:
 
 
     void adaptProcessNoise();    // Scale each filter's Q based on λ
-    void updateManeuverIndicator(const Eigen::Vector3d& z_meas);
-    double computeNIS(int model_idx, const Eigen::Vector3d& z_meas);
-    
-    // =================== Standard IMM steps ===================
+    void updateManeuverIndicator(const Eigen::VectorXd& z_meas);
+    double computeNIS(int model_idx, const Eigen::VectorXd& z_meas);
+
     void interactionStep();
     void computeMixingProbabilities();
-    double computeLikelihood(int model_idx, const Eigen::Vector3d& z_meas);
-    void updateModelProbabilities(const Eigen::Vector3d& z_meas);
+    double computeLikelihood(int model_idx, const Eigen::VectorXd& z_meas);
+    void updateModelProbabilities(const Eigen::VectorXd& z_meas);
     void combineEstimates();
-
-    // Map model state to unified 6D state [x,y,z,vx,vy,vz]
-    Eigen::VectorXd toUnifiedState(const Eigen::VectorXd& state, int model_type) const;
-    static Eigen::MatrixXd toUnifiedCovariance(const Eigen::VectorXd& x_model,
-                                               const Eigen::MatrixXd& P_model,
-                                               int model_type);
-    // Map unified 6D state back to model-specific state
-    Eigen::VectorXd fromUnifiedState(const Eigen::VectorXd& unified, int model_type, 
-                                      const Eigen::VectorXd& original) const;
-
-    
-    static Eigen::MatrixXd fromUnifiedCovariance(const Eigen::VectorXd& unified_x,
-                                                 const Eigen::MatrixXd& P_uni,
-                                                 int model_type,
-                                                 const Eigen::MatrixXd& original_P);
 
     // Combined output
     Eigen::VectorXd combined_state_;

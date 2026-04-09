@@ -5,7 +5,6 @@
 #include <pcl/octree/octree_search.h>
 
 #include <vector>
-#include <unordered_map>
 
 #include "types.h"
 
@@ -35,9 +34,9 @@ public:
     /**
      * @brief Find all neighbors within epsilon distance
      * @param point_idx Index of the query point
-     * @return Vector of neighbor indices
+      * @return Reference to reusable neighbor index buffer
      */
-    std::vector<int> regionQuery(int point_idx);
+     const std::vector<int>& regionQuery(int point_idx);
     
     /**
      * @brief Expand cluster from a core point
@@ -46,11 +45,6 @@ public:
      * @return cluster_id on success, -1 if point is noise
      */
     int expandCluster(int point_idx, int cluster_id);
-    
-    /**
-     * @brief Calculate Euclidean distance between two points
-     */
-    double getDistance(const ClusterPoint& p1, const ClusterPoint& p2);
     
     /**
      * @brief Get number of clusters found
@@ -63,10 +57,10 @@ public:
     double getEpsilon() const { return eps_; }
     
     /**
-     * @brief Get clustered point clouds
-     * @return Map of cluster_id to point cloud
+     * @brief Get clustered point clouds by cluster_id index
+     * @return Vector where index is cluster_id, index 0 is unused
      */
-    const std::unordered_map<int, PointCloudPtr>& getClusters() const { 
+    const std::vector<PointCloudPtr>& getClusters() const {
         return clusters_; 
     }
 
@@ -84,7 +78,9 @@ private:
     
     pcl::PointCloud<PointT>::Ptr cloud_;
     pcl::octree::OctreePointCloudSearch<PointT> octree_;
-    std::unordered_map<int, PointCloudPtr> clusters_;
+    std::vector<PointCloudPtr> clusters_;
+    std::vector<int> nn_neighbors_buffer_;
+    std::vector<float> nn_distances_buffer_;
 };
 
 }  // namespace rm_radar_lidar_detector

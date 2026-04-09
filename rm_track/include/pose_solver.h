@@ -2,7 +2,7 @@
  * @Author: fwEnjeru666 enjeru2121@gmail.com
  * @Date: 2026-02-05 16:49:04
  * @LastEditors: fwEnjeru666 enjeru2121@gmail.com
- * @LastEditTime: 2026-03-13 18:39:11
+ * @LastEditTime: 2026-04-03 18:34:44
  * @FilePath: /radar_detection_moduel/src/rm_radarplugin/rm_track/include/pose_solver.h
  * @Description: pose solver.h
  * 
@@ -42,7 +42,7 @@ namespace rm_radarplugin
     struct YawOptimizeParams
     {
         bool enable_reprojection{true};  
-        bool optimize_translation{false};  // Disabled - was causing bad results
+        bool optimize_translation{true}; 
         double fixed_pitch{-15.0 * CV_PI / 180.0};
         double prior_weight{3.0};
         double huber_delta_px{5.0};
@@ -67,7 +67,7 @@ namespace rm_radarplugin
                                 double yaw, double yaw_center);
         void optimizeTranslation(const Eigen::Matrix3d& R);
         void optimizeYaw();
-        void PoseSolverCB(const rm_radar_msgs::DroneDetectionArray::ConstPtr& detections);
+        void PoseSolverCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);
         void processSingleDetection(const rm_radar_msgs::DroneDetection& detection);
         void publishTransform(const rm_radar_msgs::DroneDetection& detection);
         Eigen::Quaterniond getQuaternion() const { return optimized_q_; };
@@ -171,7 +171,7 @@ namespace rm_radarplugin
        Eigen::Quaterniond optimized_q_ = Eigen::Quaterniond::Identity();
        
        // ---- PoseSolver dynamic reconfigure (EMA on/off + params) ----
-       dynamic_reconfigure::Server<rm_track::pose_solverConfig>* pose_solver_cfg_srv_{nullptr};
+       std::unique_ptr<dynamic_reconfigure::Server<rm_track::pose_solverConfig>> pose_solver_cfg_srv_{nullptr};
        dynamic_reconfigure::Server<rm_track::pose_solverConfig>::CallbackType pose_solver_cfg_cb_;
 
        bool use_ema_{true};
@@ -179,6 +179,7 @@ namespace rm_radarplugin
        void poseSolverConfigCB(rm_track::pose_solverConfig& config, uint32_t level)
        {
            use_ema_ = config.use_ema;
+           verbose_log_ = config.verbose_log;
            ema_alpha_ = config.ema_alpha;
            spike_threshold_ = config.spike_threshold;
            max_consecutive_spikes_ = config.max_consecutive_spikes;
@@ -188,9 +189,11 @@ namespace rm_radarplugin
                resetEMA();
            }
 
-           ROS_INFO("[PoseSolver] Reconfigure: use_ema=%d, ema_alpha=%.3f, spike_threshold=%.3f, max_consecutive_spikes=%d",
-                    (int)use_ema_, ema_alpha_, spike_threshold_, max_consecutive_spikes_);
+           ROS_INFO("[PoseSolver] Reconfigure: use_ema=%d, verbose_log=%d, ema_alpha=%.3f, spike_threshold=%.3f, max_consecutive_spikes=%d",
+                    (int)use_ema_, (int)verbose_log_, ema_alpha_, spike_threshold_, max_consecutive_spikes_);
        }
+       
+       bool verbose_log_ = true;  // 默认启用详细日志
        // ---- end dynamic reconfigure ----
 
        // ---- EMA smoothing & spike rejection ----

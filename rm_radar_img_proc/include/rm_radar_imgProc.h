@@ -81,7 +81,7 @@ namespace rm_radarplugin
         std::vector<cv::Point2d> bars_4points_;        /// bl, tl, tr, br ; center point
         std::vector<cv::Point2d> bars_inter_4points_;  /// bl, tl, tr, br ; inter point
         std::vector<cv::Point2d> bars_PCA_4points_;
-        float warp_white_ratio_;
+
         double length;
         double width;
         cv::Point2d center_;
@@ -370,7 +370,6 @@ namespace rm_radarplugin
         void drawBars(cv::Mat& image, std::vector<Bar>& bars);
         void drawArmors(cv::Mat& image, std::vector<Armor>& armors);
         void drawArmorsVertexes(cv::Mat& image, std::vector<Armor>& armors);
-        bool drawWarp();
         void drawTracker(cv::Mat& image, cv::Point3f& tracked_position);
         void draw() override;
 
@@ -398,8 +397,12 @@ namespace rm_radarplugin
         {
             camera_info_ = info;
             target_array_.header = info->header;
-            intrinsics_ = cv::Mat(3, 3, CV_64F, (void*)info->K.data()).clone();
-            dist_coeffs_ = cv::Mat(info->D).clone();
+            if (!camera_model_initialized_)
+            {
+                intrinsics_ = cv::Mat(3, 3, CV_64F, (void*)info->K.data()).clone();
+                dist_coeffs_ = cv::Mat(info->D).clone();
+                camera_model_initialized_ = true;
+            }
             boost::shared_ptr<cv_bridge::CvImage> temp =
                 boost::const_pointer_cast<cv_bridge::CvImage>(cv_bridge::toCvShare(img, "bgr8"));
             imageProcess(temp);
@@ -447,23 +450,12 @@ namespace rm_radarplugin
         double max_bars_distance_{};
         double max_bars_angle_{};
         double max_bars_x_dis_{};
-        float warp_white_ratio_{};
         bool select_by_last_{};
-
-        /// armor warp
-        double large_armor_ratio_{};
-        std::vector<cv::Point2d> warp_reference_;
-        /// warp : 32 * 28
-        int warp_height_;
-        int warp_width_;
         /// cut img (roi)
         int roi_height_{};
         int roi_width_{};
         double top_light_y_{};
         double bottom_light_y_{};
-        double bar_length_in_warp_{};
-        bool is_large_armor_;
-        bool is_large_armor_store_{};
         int armor_temp_[6]{};
         /// id classification
         std::string xml_path_{};
@@ -505,8 +497,11 @@ namespace rm_radarplugin
         cv::Mat gray_image_{};
         cv::Mat binary_image_{};
         cv::Mat morpro_image_{};
-        cv::Mat warp_image_{};
         cv::Mat debug_image_{};
+        cv::Mat hsv_image_{};
+        cv::Mat blue_channel_{};
+        cv::Mat green_channel_{};
+        cv::Mat red_channel_{};
 
 
         ///debuger
@@ -539,7 +534,7 @@ namespace rm_radarplugin
 
         //3d points
         double armor_half_w_ = 0.012 / 2.0;   // half bar length = 6mm
-        double armor_half_h_ = 0.045 / 2.0;   // half inter-bar distance = 22.5mm
+        double armor_half_h_ = 0.050 / 2.0;
         std::vector<cv::Point3d> armor_3d_points_{
             cv::Point3d(-armor_half_w_, -armor_half_h_, 0),  // TL
             cv::Point3d( armor_half_w_, -armor_half_h_, 0),  // TR
@@ -550,6 +545,7 @@ namespace rm_radarplugin
         //tf
         std::shared_ptr<tf2_ros::Buffer> tf2_buffer_;
         std::unique_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
+        bool camera_model_initialized_{false};
 
     };
 }

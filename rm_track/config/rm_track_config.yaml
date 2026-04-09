@@ -1,0 +1,78 @@
+# 1. 追踪器基础控制参数
+target_frame: "odom"      # 全局坐标系
+hit_threshold: 3          # 连续检测命中多少帧后进入 TRACKING 稳定追踪状态
+max_lost_count: 5         # 连续丢失多少帧后进入 LOST 完全丢失状态
+
+use_lidar_fusion: true    # 是否启用雷达点云辅助融合
+lidar_timeout: 0.5        # 雷达数据最大超时时间 (秒)
+vision_timeout: 0.3       # 视觉数据最大超时时间 (秒)
+pixel_noise_u: 4.0        # 像素观测 u 方向标准差 (px)
+pixel_noise_v: 4.0        # 像素观测 v 方向标准差 (px)
+force_3d_measurement: true # 强制使用3D位姿量测（禁用8D角点量测）
+enable_pixel_gating: false # 是否启用像素观测门控
+enable_3d_fallback: false  # 8D不可用/门控失败时是否降级到3D；false=严格8D
+pixel_nis_gate: 40.0      # 像素观测NIS门限
+pixel_reproj_rmse_gate_near: 12.0 # 近距像素重投影RMSE门限 (px)
+pixel_reproj_rmse_gate_mid: 20.0  # 中距像素重投影RMSE门限 (px)
+pixel_reproj_rmse_gate_far: 30.0  # 远距像素重投影RMSE门限 (px)
+pixel_gate_distance_near: 8.0     # 近距阈值 (m)
+pixel_gate_distance_far: 18.0     # 远距阈值 (m)
+
+# 紧耦合模式投影参数
+cam_info_topic: "/hk_camera/camera_info" # 必须提供CameraInfo，Tracker从该话题同步fx/fy/cx/cy
+armor_width: 0.135
+armor_height: 0.055
+
+use_aimm: false            # 是否启用多模型交互 (AIMM)。如果设为 false 则只跑第一个模型(纯UKF)
+debug_mode: false        
+aimm_debug_mode: false    
+
+
+# 2. AIMM 动态自适应参数 
+aimm:
+  # 机动指标平滑参数
+  lambda_ema_alpha: 0.3   # lambda的指数移动平均(EMA)系数。越大对机动响应越快，但越容易受噪声干扰
+  nis_baseline_alpha: 0.01 # NIS 基准线的自适应学习率
+  
+  # 模型转移概率矩阵 (TPM) 参数 
+  sigmoid_k: 5.0          # Sigmoid 激活函数的陡峭度 (切换模型的响应速度)
+  maneuver_gain: 2.0      # 机动增益偏置 (用于动态分配多模型的信任权重)
+  p_stay_min: 0.60        # 剧烈机动时，保持当前模型的最低概率 (机动时，切换模型的倾向)
+  p_stay_max: 0.98        # 平稳移动时，保持当前模型的最高概率 (稳定时，保持模型的倾向)
+  p_stay_nominal: 0.90    # 初始/默认保持概率
+  
+  # 过程噪声 (Q) 自适应缩放参数 
+  q_scale_max: 10.0       # 目标剧烈机动时，过程噪声 Q 的最大放大倍数 (允许更大范围的状态变化)
+
+
+# 3. 滤波器运动模型库 (供 model_register 加载)
+models:
+  # CV
+  # 状态量 (6维)：[x, y, z, vx, vy, vz]
+  - type: "CV"
+    p_diagonal: [1.0, 1.0, 1.0, 10.0, 10.0, 10.0] # 初始状态协方差，位置较小，速度较大，允许初始速度不确定
+    q_diagonal: [3.00, 3.00, 5.00, 3.00, 3.00, 5.00] # 适中的过程噪声，允许一定的加速度变化但不太剧烈
+    r_diagonal: [0.01, 0.01, 0.1] # 适中的测量噪声，允许一定的位置变化但不太剧烈
+
+  # CA
+  # 状态量 (9维)：[x, y, z, vx, vy, vz, ax, ay, az]
+  - type: "CA"
+    p_diagonal: [1.0, 1.0, 1.0, 10.0, 10.0, 10.0, 100.0, 100.0, 100.0]  # 初始状态协方差，位置较小，速度较大，加速度更大，允许初始加速度高度不确定
+    q_diagonal: [0.05, 0.05, 0.05, 0.1, 0.1, 0.1, 1.0, 1.0, 1.0] # 极大的加速度方差，允许快速变向
+    r_diagonal: [0.01, 0.01, 0.1]
+
+  # Singer
+  # 状态量 (9维)：[x, y, z, vx, vy, vz, ax, ay, az]
+  # tau 为加速度相关时间常数（秒），越大越接近 CA，越小表示加速度更快衰减
+  - type: "Singer"
+    tau: 0.8
+    p_diagonal: [1.0, 1.0, 1.0, 10.0, 10.0, 10.0, 80.0, 80.0, 80.0]
+    q_diagonal: [0.01, 0.05, 0.05, 0.1, 0.1, 0.1, 1.0, 1.0, 1.0]
+    r_diagonal: [0.01, 0.01, 0.1]
+
+  # # CTRV
+  # # 状态量 (5维) [x, y, v, yaw, yaw_rate]
+  # - type: "CTRV"
+  #   p_diagonal: [1.0, 1.0, 10.0, 1.0, 10.0] # 初始状态协方差，位置较小，速度较大，航向角较小，转向率较大，允许初始速度和转向率不确定
+  #   q_diagonal: [0.05, 0.05, 0.5, 0.05, 0.5] # 适中的过程噪声，允许速度和转向变化但不太剧烈 
+  #   r_diagonal: [0.01, 0.01, 0.1]

@@ -3,7 +3,7 @@ project(rm_track)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
-
+add_compile_options(-std=c++14)
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
@@ -105,6 +105,10 @@ generate_dynamic_reconfigure_options(
         cfg/ukf.cfg
         cfg/pose_solver.cfg
         cfg/aimm.cfg
+        cfg/cv.cfg
+        cfg/ca.cfg
+        cfg/ctrv.cfg
+        cfg/singer.cfg
 )
 
 ###################################
@@ -140,8 +144,8 @@ add_library(${PROJECT_NAME}
   src/rm_track.cpp
   src/ukf.cpp
   src/aimm.cpp
-  src/decision_maker.cpp
   src/pose_solver.cpp
+  src/motion_models_define.cpp
 )
 
 # Ensure dynamic_reconfigure generates headers before compiling this library

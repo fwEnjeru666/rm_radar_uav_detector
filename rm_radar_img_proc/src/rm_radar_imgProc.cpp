@@ -8,7 +8,13 @@ namespace rm_radarplugin
     void Processor::onInit()
     {
         ros::NodeHandle& nh = getMTPrivateNodeHandle();
+        static ros::CallbackQueue callback_queue;
+        nh.setCallbackQueue(&callback_queue);
         initialize(nh);
+        my_thread_ = std::thread([this]() {
+            ros::SingleThreadedSpinner spinner;
+            spinner.spin(&callback_queue);
+        });
     }
 
     void Processor::initialize(ros::NodeHandle &nh)
@@ -19,8 +25,6 @@ namespace rm_radarplugin
         auto armor_params_init = [this, &nh]() {
             ROS_INFO("reading armor param");
             //    bar_br_thresh_ = nh.param("bar_br_thresh", decltype(bar_br_thresh_){});
-            bar_length_in_warp_ = nh.param("bar_length_in_warp", decltype(bar_length_in_warp_){});
-            warp_height_ = nh.param("warp_height", decltype(warp_height_){});
             top_light_y_ = nh.param("top_light_y", decltype(top_light_y_){});
             roi_width_ = nh.param("roi_width", decltype(roi_width_){});
             roi_height_ = nh.param("roi_height", decltype(roi_height_){});
@@ -100,8 +104,8 @@ namespace rm_radarplugin
 
         tf2_buffer_ = std::make_shared<tf2_ros::Buffer>(ros::Duration(10));
         tf_listener_ = std::unique_ptr<tf2_ros::TransformListener>(new tf2_ros::TransformListener(*tf2_buffer_));
-        target_pub_ = nh.advertise<decltype(target_array_)>("/processor/result_msg", 1);
-        target_pub_single_ = nh.advertise<rm_radar_msgs::DroneDetection>("/processor/single_result_msg", 1);
+        target_pub_ = nh.advertise<decltype(target_array_)>("/processor/result_msg", 10);
+        target_pub_single_ = nh.advertise<rm_radar_msgs::DroneDetection>("/processor/single_result_msg", 10);
 
     }
 
@@ -215,13 +219,6 @@ namespace rm_radarplugin
     }
     }
 
-    bool Processor::drawWarp()
-    {
-        if (armors_.size() != 1)
-            return false;
-        Armor armor_tmp(armors_[0]);
-        return true;
-    }
 
     void Processor::trackerCB(const rm_msgs::TrackData::ConstPtr& msg)
     {
@@ -296,25 +293,6 @@ namespace rm_radarplugin
                     raw_image_.copyTo(draw_image);
                     drawArmorsVertexes(draw_image, armors_);
                     break;
-                case DrawImage::WARP:
-                    if (!drawWarp())
-                    {
-                        ROS_WARN("cannot draw warp image, because armors size != 1");
-                        raw_image_.copyTo(draw_image);
-                    }
-                    else if (!warp_image_.empty())
-                    {
-                        cv::imshow("warp_image", warp_image_);
-                        cv::waitKey(1);
-                        raw_image_.copyTo(draw_image);
-                        drawArmors(draw_image, armors_);
-                    }
-                    else
-                    {
-                        ROS_WARN("warp_image is empty");
-                        raw_image_.copyTo(draw_image);
-                    }
-                    break;
                 case DrawImage::TRACKER:
                     if (track_data_.tracking)
                     {
@@ -374,72 +352,49 @@ namespace rm_radarplugin
 
     void Processor::hsv2Binary()
     {
-        cv::Mat hsv_image;
-
-        cvtColor(this->raw_image_, hsv_image, cv::COLOR_BGR2HSV);
+        cv::cvtColor(this->raw_image_, hsv_image_, cv::COLOR_BGR2HSV);
         if (target_is_red_ == 1)
         {
             cv::Mat h_binary_low, h_binary_high;
-            inRange(hsv_image, cv::Scalar(red_h_min_low_, red_s_min_, red_v_min_), cv::Scalar(red_h_max_low_, red_s_max_, red_v_max_),
+            inRange(hsv_image_, cv::Scalar(red_h_min_low_, red_s_min_, red_v_min_), cv::Scalar(red_h_max_low_, red_s_max_, red_v_max_),
                     h_binary_low);
-            inRange(hsv_image, cv::Scalar(red_h_min_high_, red_s_min_, red_v_min_), cv::Scalar(red_h_max_high_, red_s_max_, red_v_max_),
+            inRange(hsv_image_, cv::Scalar(red_h_min_high_, red_s_min_, red_v_min_), cv::Scalar(red_h_max_high_, red_s_max_, red_v_max_),
                     h_binary_high);
             bitwise_or(h_binary_low, h_binary_high, binary_image_);
         }
         else
         {
-            inRange(hsv_image, cv::Scalar(blue_h_min_, blue_s_min_, blue_v_min_), cv::Scalar(blue_h_max_, blue_s_max_, blue_v_max_),
+            inRange(hsv_image_, cv::Scalar(blue_h_min_, blue_s_min_, blue_v_min_), cv::Scalar(blue_h_max_, blue_s_max_, blue_v_max_),
                     binary_image_);
         }
     }
 
     void Processor::bgr2Binary()
     {
-        binary_image_.create(raw_image_.size(), CV_8UC1);
+        cv::extractChannel(raw_image_, blue_channel_, 0);
+        cv::extractChannel(raw_image_, green_channel_, 1);
+        cv::extractChannel(raw_image_, red_channel_, 2);
 
-        if (raw_image_.isContinuous() && binary_image_.isContinuous()) {
-            int num_pixels = raw_image_.total();
-            const cv::Vec3b* src_ptr = raw_image_.ptr<cv::Vec3b>(0);
-            uchar* dst_ptr = binary_image_.ptr<uchar>(0);
-
-            if (target_is_red_ == 1) {
-                for (int i = 0; i < num_pixels; ++i) {
-                    dst_ptr[i] = cv::saturate_cast<uchar>(src_ptr[i][2] - src_ptr[i][0]);
-                }
-            } else {
-                for (int i = 0; i < num_pixels; ++i) {
-                    dst_ptr[i] = cv::saturate_cast<uchar>(src_ptr[i][0] - src_ptr[i][2]);
-                }
-            }
+        if (target_is_red_ == 1) {
+            // 红 - 绿
+            cv::subtract(red_channel_, green_channel_, binary_image_);
         } else {
-            for (int r = 0; r < raw_image_.rows; ++r) {
-                const cv::Vec3b* src_ptr = raw_image_.ptr<cv::Vec3b>(r);
-                uchar* dst_ptr = binary_image_.ptr<uchar>(r);
+            // 蓝 - 绿
+            cv::subtract(blue_channel_, green_channel_, binary_image_);
+        }   
 
-                if (target_is_red_ == 1) {
-                    for (int c = 0; c < raw_image_.cols; ++c) {
-                        dst_ptr[c] = cv::saturate_cast<uchar>(src_ptr[c][2] - src_ptr[c][0]);
-                    }
-                } else {
-                    for (int c = 0; c < raw_image_.cols; ++c) {
-                        dst_ptr[c] = cv::saturate_cast<uchar>(src_ptr[c][0] - src_ptr[c][2]);
-                    }
-                }
-            }
-        }
-
-        threshold(binary_image_, binary_image_, binary_thresh_, 255, cv::THRESH_BINARY);
+        cv::threshold(binary_image_, binary_image_, binary_thresh_, 255, cv::THRESH_BINARY);
     }
 
     void Processor::imageProcess(cv_bridge::CvImagePtr &cv_image)
     {
-        cv::Mat element = setElement();
-        cv_image->image.copyTo(raw_image_);
-
-        if(raw_image_.channels() == 3)
-            cv::cvtColor(raw_image_, gray_image_, cv::COLOR_BGR2GRAY);
-        else
-            raw_image_.copyTo(gray_image_);
+        raw_image_ = cv_image->image;
+        static int last_element_size = -1;
+        static cv::Mat element;
+        if (last_element_size != binary_element_) {
+            element = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(binary_element_, binary_element_), cv::Point(-1, -1));
+            last_element_size = binary_element_;
+        }
 
         switch (preprocess_method_)
         {
@@ -649,12 +604,27 @@ namespace rm_radarplugin
         std::vector<MatchPairs> match_pairs;
         match_pairs.reserve(bars_.size() * (bars_.size() - 1) / 2); 
 
+        double max_bar_length = 0.0;
+        for (const auto& bar : bars_)
+        {
+            if (bar.length_len_ > max_bar_length)
+            {
+                max_bar_length = bar.length_len_;
+            }
+        }
+
         for (size_t i = 0; i < bars_.size(); i++)
         {
+            Bar& bar_top = bars_[i];
+            const double max_pair_dy = (bar_top.length_len_ + max_bar_length) * max_bars_distance_;
             for (size_t j = i + 1; j < bars_.size(); j++)
             {
-                Bar& bar_top = bars_[i];
                 Bar& bar_bottom = bars_[j];
+                const double dy = bar_bottom.center_point_.y - bar_top.center_point_.y;
+                if (dy > max_pair_dy)
+                {
+                    break;
+                }
                 if (isValidArmor(bar_top, bar_bottom))
                 {
                     double score = getArmorScore(bar_top, bar_bottom);
@@ -690,12 +660,24 @@ namespace rm_radarplugin
             return;
         }
 
+        const auto best_it = std::max_element(
+            armors_.begin(), armors_.end(),
+            [](const Armor& a, const Armor& b) {
+                return a.confidence_ < b.confidence_;
+            });
+        const size_t best_idx = static_cast<size_t>(std::distance(armors_.begin(), best_it));
+
+        if(raw_image_.channels() == 3)
+            cv::cvtColor(raw_image_, gray_image_, cv::COLOR_BGR2GRAY);
+        else
+            raw_image_.copyTo(gray_image_);
+
         const cv::Size win_size(5, 5); 
         const cv::Size zero_zone(-1, -1);
         const cv::TermCriteria criteria(cv::TermCriteria::EPS + cv::TermCriteria::MAX_ITER, 30, 0.001);
 
-        for (auto& armor : armors_)
         {
+            auto& armor = armors_[best_idx];
             std::vector<cv::Point2f> corners;
             corners.reserve(4);
             for (int i = 0; i < 4; ++i) {
@@ -707,13 +689,17 @@ namespace rm_radarplugin
                 armor.bars_4points_[i] = cv::Point2d(corners[i].x, corners[i].y);
             }
         }
-        
+
         if(is_armor_debug_)
         {
-            ROS_INFO_THROTTLE(2, "[findArmor] Matched & Optimized %lu armors from %lu bars", armors_.size(), bars_.size());
+            ROS_INFO_THROTTLE(2, "[findArmor] Sub-pixel optimized best armor idx=%lu score=%.3f among %lu armors",
+                              best_idx, armors_[best_idx].confidence_, armors_.size());
         }
 
         target_array_.detections.reserve(armors_.size());
+
+        rm_radar_msgs::DroneDetection best_target;
+        bool has_best_target = false;
 
         for(auto& armor : armors_)
         {
@@ -721,6 +707,8 @@ namespace rm_radarplugin
 
             rm_radar_msgs::DroneDetection target;
             target.header = target_array_.header; 
+            target.is_cam_msg = true;
+            target.is_lidar_msg = false;
             target.confidence = armor.confidence_;
             target.distance_to_image_center = distance2ImgCenter;
 
@@ -732,8 +720,18 @@ namespace rm_radarplugin
             
             target.img_centroid_x = static_cast<uint32_t>(armor.center_.x);
             target.img_centroid_y = static_cast<uint32_t>(armor.center_.y);
-            target_pub_single_.publish(target);
             target_array_.detections.push_back(target);
+
+            if (!has_best_target || target.confidence > best_target.confidence)
+            {
+                best_target = target;
+                has_best_target = true;
+            }
+        }
+
+        if (has_best_target)
+        {
+            target_pub_single_.publish(best_target);
         }
         
         target_array_.is_red = target_is_red_;

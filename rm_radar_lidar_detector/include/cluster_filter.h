@@ -5,7 +5,7 @@
 #include <pcl/common/common.h>
 #include <pcl/common/centroid.h>
 
-#include <unordered_map>
+#include <vector>
 
 #include "types.h"
 
@@ -13,13 +13,31 @@ namespace rm_radar_lidar_detector
 {
 
 struct ClusterFilterParams {
-    double max_volume = 10.0;
-    double min_volume = 0.1;     // compatible default
-    double max_ratio = 10.0;
-    double min_ratio = 0.1;      // compatible default
-    float min_z = -3.0f;         // compatible: aircraft_min_z default
-    int min_points = 5;
-    int max_points = 5000;       // Increased for accumulated cloud
+    int min_n = 5;
+    int max_n = 5000;            // Increased for accumulated cloud
+    double min_v = 0.1;
+    double max_v = 10.0;
+    double min_r = 0.1;
+    double max_r = 10.0;
+    float min_h = -3.0f;
+    float max_h = 10.0f;
+    double score_weight_points = 0.45;
+    double score_weight_ratio = 0.20;
+    double score_weight_volume = 0.20;
+    double score_weight_height = 0.15;
+    double score_height_norm_span = 5.0;
+};
+
+struct ClusterDebugInfo {
+    int cluster_index = -1;
+    bool valid = false;
+    bool is_best = false;
+    int point_count = 0;
+    double volume = 0.0;
+    double ratio = 0.0;
+    double score = 0.0;
+    Eigen::Vector4f centroid = Eigen::Vector4f::Zero();
+    BBox3D bbox;
 };
 
 /**
@@ -29,7 +47,7 @@ class ClusterFilter {
 public:
     using PointT = pcl::PointXYZ;
     using PointCloudPtr = pcl::PointCloud<PointT>::Ptr;
-    using ClusterMap = std::unordered_map<int, PointCloudPtr>;
+    using ClusterMap = std::vector<PointCloudPtr>;
     
     ClusterFilter() = default;
     ~ClusterFilter() = default;
@@ -56,15 +74,16 @@ public:
                   const pcl::PointXYZ& max_pt);
     
     /**
-     * @brief Find the best cluster from a map of clusters
-     * @param clusters Map of cluster_id to point cloud
+    * @brief Find the best cluster from a vector of clusters
+    * @param clusters Vector indexed by cluster_id (index 0 may be empty)
      * @param best_bbox Output: bounding box of best cluster
      * @param best_centroid Output: centroid of best cluster
      * @return Best cluster point cloud, nullptr if none valid
      */
     PointCloudPtr findBest(const ClusterMap& clusters,
                            BBox3D& best_bbox,
-                           Eigen::Vector4f& best_centroid);
+                           Eigen::Vector4f& best_centroid,
+                           std::vector<ClusterDebugInfo>* debug_infos = nullptr);
     
     /**
      * @brief Compute volume of AABB

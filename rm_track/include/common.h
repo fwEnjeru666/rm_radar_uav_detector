@@ -20,14 +20,4 @@ namespace rm_track
         LOST = 3 //reset
     };
 
-
-    enum DecisionState
-    {
-        TRACK_TELE = 0,   
-        TRACK_WIDE = 1,
-        TRACK_RADAR = 2,
-        LOST_RAMP = 3,
-        BLIND_SCAN = 4
-    };
-
 }

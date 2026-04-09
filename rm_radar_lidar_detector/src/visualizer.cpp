@@ -1,5 +1,8 @@
 #include "visualizer.h"
 
+#include <iomanip>
+#include <sstream>
+
 namespace rm_radar_lidar_detector
 {
     void Visualizer::init(ros::NodeHandle& nh, const std::string& prefix)
@@ -217,6 +220,64 @@ namespace rm_radar_lidar_detector
         marker.lifetime = ros::Duration(lifetime);
         
         return marker;
+    }
+
+    visualization_msgs::MarkerArray Visualizer::createClusterDebugMarkerArray(
+        const std::vector<ClusterDebugInfo>& debug_infos,
+        const std::string& frame_id,
+        const ros::Time& stamp,
+        double box_lifetime,
+        double text_lifetime)
+    {
+        visualization_msgs::MarkerArray marker_array;
+
+        visualization_msgs::Marker clear_marker;
+        clear_marker.header.frame_id = frame_id;
+        clear_marker.header.stamp = stamp;
+        clear_marker.ns = "cluster_debug_text";
+        clear_marker.id = 0;
+        clear_marker.action = visualization_msgs::Marker::DELETEALL;
+        marker_array.markers.push_back(clear_marker);
+
+        int marker_id = 1;
+        for (const auto& info : debug_infos)
+        {
+            const Eigen::Vector4d bbox_color = info.is_best
+                ? Eigen::Vector4d(1.0, 1.0, 0.0, 0.45)
+                : (info.valid
+                    ? Eigen::Vector4d(0.0, 1.0, 0.0, 0.35)
+                    : Eigen::Vector4d(1.0, 0.0, 0.0, 0.35));
+            auto bbox_marker = createAABBMarker(
+                info.bbox,
+                marker_id++,
+                "cluster_debug_bbox",
+                frame_id,
+                bbox_color,
+                box_lifetime);
+            bbox_marker.header.stamp = stamp;
+            marker_array.markers.push_back(bbox_marker);
+
+            Eigen::Vector3f pos(info.centroid.x(), info.centroid.y(), info.centroid.z());
+            std::ostringstream oss;
+            oss << (info.is_best ? "[BEST] " : (info.valid ? "[OK] " : "[REJ] "))
+                << "id=" << info.cluster_index
+                << " n=" << info.point_count
+                << " v=" << std::fixed << std::setprecision(2) << info.volume
+                << " r=" << std::fixed << std::setprecision(2) << info.ratio
+                << " h=" << std::fixed << std::setprecision(2) << info.centroid.z()
+                << " s=" << std::fixed << std::setprecision(2) << info.score;
+
+            auto marker = createTextMarker(pos, oss.str(), marker_id++, frame_id, 0.25, text_lifetime);
+            marker.header.stamp = stamp;
+            marker.ns = "cluster_debug_text";
+            marker.color.r = info.is_best ? 1.0f : (info.valid ? 0.0f : 1.0f);
+            marker.color.g = info.is_best ? 1.0f : (info.valid ? 1.0f : 0.0f);
+            marker.color.b = 0.0f;
+            marker.color.a = 1.0f;
+            marker_array.markers.push_back(marker);
+        }
+
+        return marker_array;
     }
 
     void Visualizer::broadcastTF(

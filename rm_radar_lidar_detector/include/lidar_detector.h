@@ -12,10 +12,14 @@
 
 #include <dynamic_reconfigure/server.h>
 #include <rm_radar_lidar_detector/FilterParamsConfig.h>
+#include <ros/callback_queue.h>
 
 #include <deque>
 #include <mutex>
 #include <memory>
+#include <thread>
+#include <vector>
+#include <string>
 
 #include "types.h"
 #include "dbscan.h"
@@ -36,7 +40,7 @@ class LidarDetector : public nodelet::Nodelet
 {
 public:
     LidarDetector() = default;
-    virtual ~LidarDetector() = default;
+    virtual ~LidarDetector() override;
 
     virtual void onInit() override;
 
@@ -50,11 +54,14 @@ private:
     void clusterTimerCallback(const ros::TimerEvent& event);
     void dynamicReconfigureCallback(FilterParamsConfig& config, uint32_t level);
 
-    // Processing pipeline - two modes
-    bool detectDynamic();   // Mode 0: Dynamic point detection
-    bool detectDirect();    // Mode 1: Direct detection on accumulated cloud
-    void updateTracking();
-    void publishResults();
+    void publishResults(const pcl::PointCloud<pcl::PointXYZ>::Ptr& detected_cluster,
+                        const BBox3D& detected_bbox,
+                        const Eigen::Vector4f& detected_centroid,
+                        const std::string& frame_id,
+                        const ros::Time& stamp);
+    void publishClusterDebugMarkers(const std::vector<ClusterDebugInfo>& debug_infos,
+                                    const std::string& frame_id,
+                                    const ros::Time& stamp);
 
     ros::NodeHandle nh_;
     ros::NodeHandle private_nh_;
@@ -64,6 +71,7 @@ private:
     ros::Publisher accumulated_cloud_pub_;
     ros::Publisher drone_cloud_pub_;
     ros::Publisher marker_pub_;
+    ros::Publisher cluster_debug_marker_array_pub_;
     ros::Publisher detection_pub_;
     
     ros::Timer cluster_timer_;
@@ -84,24 +92,23 @@ private:
     int minPts_;
     float expansion_m_;
     DetectionMode detection_mode_;
+    bool verbose_log_;
+    bool publish_cluster_debug_markers_;
+    int accumulated_publish_divider_;
+    uint64_t cluster_tick_count_;
 
     std::deque<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_queue_;
-    std::vector<ClusterPoint> dynamic_points_;
+    std::vector<ClusterPoint> dynamic_points_buffer_;
+    std::vector<ClusterPoint> airspace_points_buffer_;
+    std::vector<int> nn_indices_buffer_;
+    std::vector<float> nn_distances_buffer_;
     
     pcl::PointCloud<pcl::PointXYZ>::Ptr cur_filtered_cloud_;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr accumulated_cloud_;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr detected_cluster_;
-    
-    Eigen::Vector4f cur_centroid_;
-    BBox3D cur_detected_bbox_;
-    
-    pcl::PointXYZ track_min_pt_;
-    pcl::PointXYZ track_max_pt_;
-    bool has_tracked_;
-    bool first_cluster_;
-    bool expand_lock_;
+    ros::Time latest_cloud_stamp_;
     
     std::mutex cloud_mutex_;
+    ros::CallbackQueue callback_queue_;
+    std::thread worker_thread_;
 };
 
 }  // namespace rm_radar_lidar_detector
