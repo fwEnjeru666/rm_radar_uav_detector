@@ -12,7 +12,6 @@ namespace rm_radarplugin
         nh_ = nh;
 
         R_ = Eigen::MatrixXd::Identity(3, 3);
-        R_base_ = Eigen::MatrixXd::Identity(3, 3);
         // Setup Dynamic Reconfigure Server
         ukf_cfg_srv_ = std::make_unique<dynamic_reconfigure::Server<rm_track::ukfConfig>>(nh_);
         ukf_cfg_cb_ = boost::bind(&UKF::ukfconfigCB, this, _1, _2);
@@ -46,7 +45,6 @@ namespace rm_radarplugin
         // Reset measurement-noise storage to default 3D layout until next initialize/update.
         meas_dim_ = 3;
         R_ = Eigen::MatrixXd::Identity(3, 3);
-        R_base_ = R_;
 
         ROS_INFO("[UKF::setModel] Switched model to %s (state_dim=%d). Filter will reinitialize.",
                  model_->getName().c_str(), state_dim_);
@@ -101,15 +99,9 @@ namespace rm_radarplugin
     {   
         ROS_INFO("========== UKF Config Callback ==========");
         ROS_INFO("  debug_mode: %d -> %d", debug_mode_, config.debug_mode);
-        ROS_INFO("  r_pos_xy: %.4f (raw: %.4f)", config.r_pos_xy * config.r_pos_xy, config.r_pos_xy);
         ROS_INFO("==========================================");
         
         debug_mode_ = config.debug_mode;
-
-        //R var
-        r_pos_xy_ = config.r_pos_xy * config.r_pos_xy;
-        r_pos_z_ = config.r_pos_z * config.r_pos_z;
-        r_yaw_ = config.r_yaw * config.r_yaw;
 
         // Only update matrices if UKF is initialized
         if(!ukf_initialized_ || state_dim_ <= 0 || meas_dim_ <= 0)
@@ -118,33 +110,6 @@ namespace rm_radarplugin
                               state_dim_, meas_dim_);
             return;
         }
-
-        //R - Ensure R_ has correct dimensions
-        if(R_.rows() != meas_dim_ || R_.cols() != meas_dim_)
-        {
-            R_ = Eigen::MatrixXd::Zero(meas_dim_, meas_dim_);
-        }
-        else
-        {
-            R_.setZero();
-        }
-        
-        for(int i = 0; i < std::min(meas_dim_, 2); i++)
-        {
-            R_(i, i) = r_pos_xy_;
-        }
-        if(meas_dim_ > 2)
-        {
-            R_(2,2) = r_pos_z_;
-        }
-        //yaw
-        if (meas_dim_ > 3) 
-        {
-            R_(3, 3) = r_yaw_;
-        }
-        
-        // 保存基础矩阵，供AIMM/Tracker自适应缩放使用
-        R_base_ = R_;
         
         if(debug_mode_)
         {
@@ -332,7 +297,6 @@ namespace rm_radarplugin
             ROS_WARN_THROTTLE(1, "[UKF::update] R size (%d,%d) mismatches meas_dim=%d, resetting to identity",
                               static_cast<int>(R_.rows()), static_cast<int>(R_.cols()), meas_dim);
             R_ = Eigen::MatrixXd::Identity(meas_dim, meas_dim);
-            R_base_ = R_;
         }
 
         //1. compute predicted measurement mean and covariance

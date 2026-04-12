@@ -29,7 +29,6 @@ namespace rm_radarplugin
         bool isInitialized() const { return ukf_initialized_; }
         void setMeasurementNoise(const Eigen::MatrixXd& R) { R_ = R; }
         Eigen::MatrixXd getMeasurementNoise() const { return R_; }
-        Eigen::MatrixXd getBaseMeasurementNoise() const { return R_base_; }
 
         // Set a new motion model
         void setModel(std::shared_ptr<BaseModel> model);
@@ -69,7 +68,6 @@ namespace rm_radarplugin
         Eigen::VectorXd state_;  // State vector
         Eigen::MatrixXd P_;      // State covariance matrix
         Eigen::MatrixXd R_;      // Measurement noise covariance matrix (per-frame, may be scaled)
-        Eigen::MatrixXd R_base_; // Base measurement noise from dynamic_reconfigure
 
         Eigen::MatrixXd Xsig_; // Sigma points matrix
         Eigen::MatrixXd Xsig_pred_; // Predicted sigma points matrix
@@ -82,11 +80,6 @@ namespace rm_radarplugin
         Eigen::MatrixXd K_;        // Kalman gain matrix
 
         ros::NodeHandle nh_;
-
-        // R 
-        double r_pos_xy_{};
-        double r_pos_z_{};
-        double r_yaw_{};
 
         double dt_{};
 

@@ -1,0 +1,34 @@
+# Pose Solver 位姿解算器配置参数
+
+# 1. 基础参数
+use_ema: true                    # 启用EMA平滑和尖峰抑制
+verbose_log: true                # 启用详细日志记录
+
+# 2. EMA平滑参数
+ema_alpha: 0.3                   # EMA alpha值 (0=更多平滑, 1=无平滑)
+spike_threshold: 0.5             # 尖峰抑制阈值（米）
+max_consecutive_spikes: 5        # 连续尖峰数后重置EMA
+
+# 3. 装甲板尺寸参数（用于PnP解算）
+armor_width: 0.135               # 装甲板宽度（米）
+armor_height: 0.055              # 装甲板高度（米）
+
+# 4. 重投影优化参数
+enable_reprojection: true        # 启用重投影优化
+optimize_translation: false       # 优化平移向量
+fixed_pitch: -0.261799           # 固定俯仰角（弧度，-15度）
+prior_weight: 3.0                # 先验权重
+huber_delta_px: 5.0              # Huber损失像素阈值
+huber_delta_deg: 0.523599        # Huber损失角度阈值（弧度，30度）
+
+# 5. 角度优化参数
+big_range: 1.0472                # 大范围搜索角度（弧度，60度）
+big_step: 0.0349066              # 大范围搜索步长（弧度，2度）
+small_range: 0.0523599           # 小范围搜索角度（弧度，3度）
+small_step: 0.00349066           # 小范围搜索步长（弧度，0.2度）
+
+# 6. 相机参数（运行时从CameraInfo获取）
+cam_info_topic: "/hk_camera/camera_info"  # 相机信息话题
+
+# 7. 坐标转换参数
+target_frame: "odom"              # 目标坐标系

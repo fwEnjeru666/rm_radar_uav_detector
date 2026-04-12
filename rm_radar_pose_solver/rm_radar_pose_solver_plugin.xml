@@ -1,0 +1,5 @@
+<library path="lib/librm_radar_pose_solver">
+  <class name="rm_radar_pose_solver/PoseSolverCore" type="rm_radarplugin::PoseSolverCore" base_class_type="nodelet::Nodelet">
+    <description>Radar Pose Solver Nodelet</description>
+  </class>
+</library>

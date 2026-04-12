@@ -2,10 +2,9 @@
  * @Author: fwEnjeru666 enjeru2121@gmail.com
  * @Date: 2026-02-05 16:49:04
  * @LastEditors: fwEnjeru666 enjeru2121@gmail.com
- * @LastEditTime: 2026-04-03 18:34:44
- * @FilePath: /radar_detection_moduel/src/rm_radarplugin/rm_track/include/pose_solver.h
- * @Description: pose solver.h
- * 
+ * @LastEditTime: 2026-04-11 21:03:15
+ * @FilePath: /radar_detection_moduel/src/rm_radarplugin/rm_pose_solver/include/pose_solver.h
+ * @Description: pose solver.h - Nodelet version with full pose solving logic
  */
 
 #pragma once
@@ -14,8 +13,11 @@
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <ros/ros.h>
-#include <tf2_ros/transform_listener.h>
+#include <nodelet/nodelet.h>
 #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/buffer.h>
+#include <tf2/exceptions.h>
+#include <geometry_msgs/PointStamped.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
@@ -24,10 +26,7 @@
 #include <rm_radar_msgs/DroneDetection.h>
 #include <rm_radar_msgs/DroneDetectionArray.h>
 #include <dynamic_reconfigure/server.h>
-#include <rm_track/pose_solverConfig.h>
-
-
-
+#include <rm_radar_pose_solver/pose_solverConfig.h>
 
 namespace rm_radarplugin
 {
@@ -39,6 +38,7 @@ namespace rm_radarplugin
         else 
             return delta * (abs_error - 0.5 * delta);
     }
+    
     struct YawOptimizeParams
     {
         bool enable_reprojection{true};  
@@ -53,46 +53,50 @@ namespace rm_radarplugin
         double small_step{0.2};
     };
 
-    class PoseSolver
+    class PoseSolverCore : public nodelet::Nodelet
     {
     public:
-        PoseSolver() = default;
-        ~PoseSolver() = default;
+        PoseSolverCore() = default;
+        ~PoseSolverCore()
+        {
+            if (pose_solver_cfg_srv_) {
+                pose_solver_cfg_srv_->clearCallback(); // 先清空回调
+                pose_solver_cfg_srv_.reset();          // 再销毁服务器
+            }
+        }
         
-        void onInit(ros::NodeHandle &nh);
-        void initialize(ros::NodeHandle &nh);
+        virtual void onInit() override;
         bool solvePose(); 
         double calReprojectCost(const Eigen::Matrix3d& R, const Eigen::Vector3d& t, 
                                 const cv::Mat& K, const cv::Mat& D, 
                                 double yaw, double yaw_center);
         void optimizeTranslation(const Eigen::Matrix3d& R);
         void optimizeYaw();
-        void PoseSolverCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);
+        void poseSolverCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);
         void processSingleDetection(const rm_radar_msgs::DroneDetection& detection);
         void publishTransform(const rm_radar_msgs::DroneDetection& detection);
         Eigen::Quaterniond getQuaternion() const { return optimized_q_; };
         Eigen::Vector3d getTranslation() const { return tvec_; };
         
-
     private:
-
         // ros
         std::thread my_thread_;
         ros::NodeHandle nh_;
+        ros::NodeHandle pnh_;
         
         //target sub
         ros::Subscriber track_data_sub_;
         
-        //solved pose pub (发布给Tracker)
+        //solved pose pub (发布给Tracker使用)
         ros::Publisher solved_pose_pub_;
 
         // cam info
         bool has_cam_info_ = false;
-        std::string cam_info_topic_;
         ros::Subscriber cam_info_sub_;
         sensor_msgs::CameraInfoConstPtr camera_info_;
         cv::Mat intrinsics_;
         cv::Mat dist_coeffs_;
+        
         void camInfoCB(const sensor_msgs::CameraInfoConstPtr& cam_info)
         {
             if(has_cam_info_) return;
@@ -107,7 +111,7 @@ namespace rm_radarplugin
             intrinsics_ = K.clone();
             dist_coeffs_ = D.clone();
             has_cam_info_ = true;
-            ROS_INFO("Camera info received and processed.");
+            NODELET_INFO("Camera info received and processed.");
         }
 
         //point 3d
@@ -121,6 +125,7 @@ namespace rm_radarplugin
             cv::Point3d( armor_half_w_,  armor_half_h_, 0),  // BR (右下)
             cv::Point3d(-armor_half_w_,  armor_half_h_, 0)   // BL (左下)
         };
+        
         //point 2d
         std::vector<cv::Point2d> armor_2d_points_;
 
@@ -141,14 +146,15 @@ namespace rm_radarplugin
         // make these writable members (initialized in getReprojectParams)
         double fx_{0}, fy_{0}, cx_{0}, cy_{0}, k1_{0}, k2_{0}, p1_{0}, p2_{0}, k3_{0};
         std::vector<cv::Point2d> undistorted_points_;
+        
         void getReprojectParams()
         {
             if (intrinsics_.empty() || dist_coeffs_.empty()) {
-                ROS_WARN("intrinsics or dist_coeffs empty in getReprojectParams");
+                NODELET_WARN("intrinsics or dist_coeffs empty in getReprojectParams");
                 return;
             }
             if (armor_2d_points_.size() != 4) {
-                ROS_WARN("armor_2d_points_ size is %lu, expected 4", armor_2d_points_.size());
+                NODELET_WARN("armor_2d_points_ size is %lu, expected 4", armor_2d_points_.size());
                 return;
             }
             fx_ = intrinsics_.at<double>(0, 0);
@@ -167,16 +173,15 @@ namespace rm_radarplugin
         }
 
        //optimize translation/ Quaternion
-    //    Eigen::Vector3d optimized_tvec_;
        Eigen::Quaterniond optimized_q_ = Eigen::Quaterniond::Identity();
        
        // ---- PoseSolver dynamic reconfigure (EMA on/off + params) ----
-       std::unique_ptr<dynamic_reconfigure::Server<rm_track::pose_solverConfig>> pose_solver_cfg_srv_{nullptr};
-       dynamic_reconfigure::Server<rm_track::pose_solverConfig>::CallbackType pose_solver_cfg_cb_;
+       std::unique_ptr<dynamic_reconfigure::Server<rm_pose_solver::pose_solverConfig>> pose_solver_cfg_srv_{nullptr};
+       dynamic_reconfigure::Server<rm_pose_solver::pose_solverConfig>::CallbackType pose_solver_cfg_cb_;
 
        bool use_ema_{true};
 
-       void poseSolverConfigCB(rm_track::pose_solverConfig& config, uint32_t level)
+       void poseSolverConfigCB(rm_pose_solver::pose_solverConfig& config, uint32_t level)
        {
            use_ema_ = config.use_ema;
            verbose_log_ = config.verbose_log;
@@ -189,7 +194,7 @@ namespace rm_radarplugin
                resetEMA();
            }
 
-           ROS_INFO("[PoseSolver] Reconfigure: use_ema=%d, verbose_log=%d, ema_alpha=%.3f, spike_threshold=%.3f, max_consecutive_spikes=%d",
+           NODELET_INFO("[PoseSolver] Reconfigure: use_ema=%d, verbose_log=%d, ema_alpha=%.3f, spike_threshold=%.3f, max_consecutive_spikes=%d",
                     (int)use_ema_, (int)verbose_log_, ema_alpha_, spike_threshold_, max_consecutive_spikes_);
        }
        
@@ -232,7 +237,7 @@ namespace rm_radarplugin
                if (spike_count_ >= max_consecutive_spikes_)
                {
                    // 连续多帧都"跳"到新位置 → 目标确实移动了, 重置
-                   ROS_WARN("[PoseSolver] %d consecutive jumps (%.3fm), resetting EMA to new position",
+                   NODELET_WARN("[PoseSolver] %d consecutive jumps (%.3fm), resetting EMA to new position",
                             spike_count_, jump);
                    ema_tvec_ = raw_t;
                    ema_q_ = raw_q;
@@ -241,7 +246,7 @@ namespace rm_radarplugin
                }
                else
                {
-                   ROS_WARN_THROTTLE(1, "[PoseSolver] Spike rejected: jump=%.3fm > %.3fm (count=%d/%d)",
+                   NODELET_WARN_THROTTLE(1, "[PoseSolver] Spike rejected: jump=%.3fm > %.3fm (count=%d/%d)",
                                      jump, spike_threshold_, spike_count_, max_consecutive_spikes_);
                    return ema_tvec_;  // 沿用上一帧
                }
@@ -263,9 +268,8 @@ namespace rm_radarplugin
        }
        // ---- end EMA ----
        
-       //TF broadcaster (moved inside class)
+       //TF broadcaster 
        std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     };
-
 
 } // namespace rm_radarplugin

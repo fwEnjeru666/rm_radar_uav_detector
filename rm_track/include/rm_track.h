@@ -18,7 +18,6 @@
 #include <ros/callback_queue.h>
 #include <dynamic_reconfigure/server.h>
 #include <rm_track/trackConfig.h>
-#include <pose_solver.h>
 
 #include "ukf.h"
 #include "aimm.h"
@@ -39,10 +38,11 @@ namespace rm_radarplugin
                 my_thread_.join();
         };
         void onInit();
-        void initialize(ros::NodeHandle &nh);
         void camInfoCB(const sensor_msgs::CameraInfoConstPtr& cam_info);
-        void camDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);
+        void teleDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);
+        void wideDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);
         void lidarDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection);  // LiDAR 检测回调
+        void detectionCB(const ros::TimerEvent& event);  // 定时器回调，触发融合
 
         // Debug publisher
         ros::Publisher aimm_debug_pub_;
@@ -52,10 +52,20 @@ namespace rm_radarplugin
         Eigen::VectorXd x_state_;
 
         ros::NodeHandle nh_;
-        ros::Subscriber cam_info_sub_;
-        ros::Subscriber detection_sub_; // 订阅视觉
+        //tele cam
+        ros::Subscriber tele_cam_info_sub_;
+        ros::Subscriber tele_detection_sub_; // 订阅tele视觉
+
+        //wide cam
+        ros::Subscriber wide_cam_info_sub_;
+        ros::Subscriber wide_detection_sub_; // 订阅wide视觉
+
+
+        //lidar
         ros::Subscriber lidar_detection_sub_;  // 订阅 LiDAR 检测
+
         ros::Publisher tracker_pub_;
+
         ros::CallbackQueue my_queue_;
 
         bool debug_mode_{false};
@@ -92,7 +102,6 @@ namespace rm_radarplugin
         void filterPredict();
         void filterUpdate(const Eigen::VectorXd& z_meas);
         Eigen::VectorXd filterGetState() const;
-        Eigen::MatrixXd filterGetBaseMeasurementNoise() const;
         void filterSetMeasurementNoise(const Eigen::MatrixXd& R);
         bool filterIsInitialized() const;
         bool validatePixelMeasurement(const Eigen::VectorXd& z_meas,
@@ -107,10 +116,19 @@ namespace rm_radarplugin
         //transform
 
         bool transform2Odom(const std_msgs::Header& header, const Eigen::Vector3d& p_cam, Eigen::Vector3d& p_odom);
-        bool updateProjectionExtrinsic(const std_msgs::Header& header);
+        bool getProjectionExtrinsic(const std_msgs::Header& header);
         void loadProjectionParams();
-        void applyProjectionParamsToModels();
-        
+
+
+        struct CameraIntrinsics {
+        double fx = 0.0, fy = 0.0, cx = 0.0, cy = 0.0;
+        std::array<double, 9> K{};
+        std::vector<double> D;
+        };    
+        std::map<std::string, CameraIntrinsics> camera_intrinsics_map_;
+
+        void applyProjectionParamsToModels(const CameraIntrinsics& intrinsics);
+        std::string last_active_frame_id_;
 
         //state
         int detected_count_{};
@@ -154,8 +172,6 @@ namespace rm_radarplugin
         bool q_track_valid_{false};  // 标记四元数是否有效
         std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
-        //pose solver
-        PoseSolver pose_solver_;
         
         // LiDAR 检测融合相关
         rm_radar_msgs::DroneDetection::ConstPtr latest_lidar_detection_;
@@ -164,8 +180,29 @@ namespace rm_radarplugin
         ros::WallTime last_cam_receive_time_;
         double lidar_timeout_{0.5};  // LiDAR 检测超时时间 (秒)
         double vision_timeout_{0.3}; // 视觉检测超时时间 (秒)
-        double pixel_noise_u_{4.0};
-        double pixel_noise_v_{4.0};
+
+        mutable std::mutex noise_mtx_;  
+        void getPixelMeasurementNoise();
+        double tele_pixel_noise_u_{4.0};
+        double tele_pixel_noise_v_{4.0};
+        double wide_pixel_noise_u_{4.0};
+        double wide_pixel_noise_v_{4.0};
+        Eigen::MatrixXd R_tele_pixel_;
+        Eigen::MatrixXd R_wide_pixel_;
+
+        void get3DMeasurementNoise();
+        Eigen::Matrix3d R_tele_;
+        Eigen::Matrix3d R_wide_;
+        Eigen::Matrix3d R_lidar_;
+        double tele_r_pos_xy_{};
+        double tele_r_pos_z_{};
+        double tele_r_yaw_{};
+        double wide_r_pos_xy_{};
+        double wide_r_pos_z_{};
+        double wide_r_yaw_{};
+        double lidar_r_pos_xy_{};
+        double lidar_r_pos_z_{};
+        double lidar_r_yaw_{};
         bool force_3d_measurement_{false};
         bool enable_pixel_gating_{true};
         bool enable_3d_fallback_{true};
@@ -179,17 +216,20 @@ namespace rm_radarplugin
         std::mutex lidar_mutex_;
 
         //cam 
-        std::mutex cam_mutex_;
-        rm_radar_msgs::DroneDetection::ConstPtr latest_cam_detection_;
-        ros::Time last_cam_time_;
+        std::mutex tele_cam_mutex_;
+        std::mutex wide_cam_mutex_;
+
+        rm_radar_msgs::DroneDetection::ConstPtr latest_tele_cam_detection_;
+        rm_radar_msgs::DroneDetection::ConstPtr latest_wide_cam_detection_;
         
+        ros::WallTime last_tele_receive_time_;
+        ros::WallTime last_wide_receive_time_;
+        
+        bool processVisionMeasurement(const rm_radar_msgs::DroneDetection::ConstPtr& cam_msg, 
+                                  Eigen::VectorXd& z_meas, Eigen::Vector3d& z_init, std::string& active_frame_id);
 
         //
         ros::Timer detection_timer_;  // 检测定时器，用于触发融合
-        void detectionCB(const ros::TimerEvent& event);
-
-        //model manager
-        void initializeFilters();
 
         struct ProjectionParams
         {

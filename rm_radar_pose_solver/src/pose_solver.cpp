@@ -1,48 +1,59 @@
-#include <rm_track/pose_solverConfig.h>
+#include <rm_radar_pose_solver/pose_solverConfig.h>
 #include "pose_solver.h"
+#include <pluginlib/class_list_macros.h>
 
+PLUGINLIB_EXPORT_CLASS(rm_radarplugin::PoseSolverCore, nodelet::Nodelet)
 namespace rm_radarplugin
 {
-    void PoseSolver::onInit(ros::NodeHandle &nh)
+    void PoseSolverCore::onInit()
     {
-        initialize(nh);
-        ROS_INFO("pose solver onInit finished");
-    }
+        // Nodelet 获取句柄的标准方式
+        nh_ = getNodeHandle();
+        pnh_ = getPrivateNodeHandle();
+        
+        NODELET_INFO("PoseSolver nodelet is initializing...");
 
-    void PoseSolver::initialize(ros::NodeHandle &nh)
-    {
-        nh_ = ros::NodeHandle(nh, "pose_solver");
-        ROS_INFO("pose solver initialized");
+        // --- 同步读取装甲板尺寸参数 ---
+        double armor_w = 0.050;
+        double armor_h = 0.067;
+        // 使用私有句柄读取参数
+        pnh_.param("armor_width", armor_w, 0.050);
+        pnh_.param("armor_height", armor_h, 0.067);
+        
+        armor_half_w_ = armor_w / 2.0;
+        armor_half_h_ = armor_h / 2.0;
+        
+        armor_3d_points_ = {
+            cv::Point3d(-armor_half_w_, -armor_half_h_, 0),
+            cv::Point3d( armor_half_w_, -armor_half_h_, 0),
+            cv::Point3d( armor_half_w_,  armor_half_h_, 0),
+            cv::Point3d(-armor_half_w_,  armor_half_h_, 0)
+        };
+        NODELET_INFO("Armor size synced: width=%.3fm, height=%.3fm", armor_w, armor_h);
 
-        // --- dynamic reconfigure (EMA) ---
-        pose_solver_cfg_srv_ = std::make_unique<dynamic_reconfigure::Server<rm_track::pose_solverConfig>>(nh_);
-        pose_solver_cfg_cb_ = boost::bind(&PoseSolver::poseSolverConfigCB, this, _1, _2);
+        pose_solver_cfg_srv_ = std::make_unique<dynamic_reconfigure::Server<rm_pose_solver::pose_solverConfig>>(pnh_);
+        pose_solver_cfg_cb_ = boost::bind(&PoseSolverCore::poseSolverConfigCB, this, boost::placeholders::_1, boost::placeholders::_2);
         pose_solver_cfg_srv_->setCallback(pose_solver_cfg_cb_);
-        // --- end dynamic reconfigure ---
 
-        // cam info
-        if (!nh_.getParam("cam_info_topic", cam_info_topic_))
-        {
-            cam_info_topic_ = "/hk_camera/camera_info";
-            ROS_WARN("Parameter 'cam_info_topic' not found. Using default: %s", cam_info_topic_.c_str());
-        }
-        cam_info_sub_ = nh_.subscribe(cam_info_topic_, 1, &PoseSolver::camInfoCB, this); 
+        // --- cam info 订阅 ---
+        cam_info_sub_ = nh_.subscribe("/hk_camera/camera_info", 1, &PoseSolverCore::camInfoCB, this); 
+        
         if(!intrinsics_.empty() && !dist_coeffs_.empty())
         {
             getReprojectParams();
         }
 
-        //track data sub: img_proc already publishes the best-confidence detection.
-        track_data_sub_ = nh_.subscribe("/processor/single_result_msg", 1, &PoseSolver::PoseSolverCB, this);
-        
-        //solved pose pub (发布给Tracker使用)
+        // ROS 话题发布与订阅
+        track_data_sub_ = nh_.subscribe("/processor/single_result_msg", 1, &PoseSolverCore::poseSolverCB, this);
         solved_pose_pub_ = nh_.advertise<rm_radar_msgs::DroneDetection>("/pose_solver/solved_pose", 10);
-
-        //tf
+        
+        // TF 相关初始化
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>();
+
+        NODELET_INFO("PoseSolver nodelet initialization finished.");
     }
 
-    bool PoseSolver::solvePose()
+    bool PoseSolverCore::solvePose()
     {
         cv::Mat rvec, tvec;
         
@@ -70,12 +81,11 @@ namespace rm_radarplugin
         reproj_err /= 4.0;  // 平均重投影误差 (像素)
 
         // ---- 2. 针孔模型深度交叉验证 ----
-        // 用竖直方向(像素跨度大, 更稳定)估算深度: tz_est = fy * real_height / pixel_height
         double pixel_h = 0.0;
         {
-            double dy_left  = armor_2d_points_[3].y - armor_2d_points_[0].y;  // BL.y - TL.y
+            double dy_left  = armor_2d_points_[3].y - armor_2d_points_[0].y; 
             double dx_left  = armor_2d_points_[3].x - armor_2d_points_[0].x;
-            double dy_right = armor_2d_points_[2].y - armor_2d_points_[1].y;  // BR.y - TR.y
+            double dy_right = armor_2d_points_[2].y - armor_2d_points_[1].y; 
             double dx_right = armor_2d_points_[2].x - armor_2d_points_[1].x;
             double len_left  = std::sqrt(dy_left * dy_left + dx_left * dx_left);
             double len_right = std::sqrt(dy_right * dy_right + dx_right * dx_right);
@@ -85,76 +95,37 @@ namespace rm_radarplugin
         double real_h = armor_half_h_ * 2.0;
         double tz_pinhole = (pixel_h > 1.0) ? (fy * real_h / pixel_h) : 0.0;
         
-        // PnP的tz和针孔估算差距太大 → PnP解不靠谱
         double tz_ratio = (tz_pinhole > 0.01) ? (tz / tz_pinhole) : 999.0;
 
         if (verbose_log_) 
         {
-            ROS_INFO_THROTTLE(1, "[PoseSolver] PnP: t=(%.4f,%.4f,%.4f), reproj_err=%.1fpx, "
-                              "tz_pinhole=%.4f, tz_ratio=%.2f, pixel_h=%.1f, "
-                              "2D:(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)",
-                              tx, ty, tz, reproj_err, tz_pinhole, tz_ratio, pixel_h,
-                              armor_2d_points_[0].x, armor_2d_points_[0].y,
-                              armor_2d_points_[1].x, armor_2d_points_[1].y,
-                              armor_2d_points_[2].x, armor_2d_points_[2].y,
-                              armor_2d_points_[3].x, armor_2d_points_[3].y);
+            NODELET_INFO_THROTTLE(1, "[PoseSolver] PnP: t=(%.4f,%.4f,%.4f), reproj_err=%.1fpx, "
+                              "tz_pinhole=%.4f, tz_ratio=%.2f, pixel_h=%.1f",
+                              tx, ty, tz, reproj_err, tz_pinhole, tz_ratio, pixel_h);
         }
 
         // ---- 3. 过滤 ----
-        if (std::isnan(tx) || std::isnan(ty) || std::isnan(tz))
-        {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: NaN in PnP result");
-            return false;
-        }
-        if (tz < 0.01)
-        {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: tz=%.4f < 0.01", tz);
-            return false;
-        }
-        if (tz > 30.0)
-        {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: tz=%.4f > 30.0", tz);
-            return false;
-        }
-        if (reproj_err > 30.0)
-        {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: reproj_err=%.1fpx > 30.0 (bad PnP fit)", reproj_err);
-            return false;
-        }
+        if (std::isnan(tx) || std::isnan(ty) || std::isnan(tz)) return false;
+        if (tz < 0.01 || tz > 30.0) return false;
+        if (reproj_err > 30.0) return false;
 
         constexpr double kTzRatioRejectLow  = 0.49;
         constexpr double kTzRatioRejectHigh = 1.50;
         constexpr double kTzRatioFallbackLow  = 0.85;
         constexpr double kTzRatioFallbackHigh = 1.20;
 
-        if (tz_pinhole <= 0.01)
-        {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: pinhole depth invalid (pixel_h=%.2f)", pixel_h);
-            return false;
-        }
-
-        if (tz_ratio < kTzRatioRejectLow || tz_ratio > kTzRatioRejectHigh)
-        {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: tz_ratio=%.2f out of [%.2f, %.2f] (PnP=%.4f vs pinhole=%.4f)",
-                              tz_ratio, kTzRatioRejectLow, kTzRatioRejectHigh, tz, tz_pinhole);
-            return false;
-        }
+        if (tz_pinhole <= 0.01) return false;
+        if (tz_ratio < kTzRatioRejectLow || tz_ratio > kTzRatioRejectHigh) return false;
 
         if (tz_ratio < kTzRatioFallbackLow || tz_ratio > kTzRatioFallbackHigh)
         {
-            // PnP深度和针孔估算有一定差异：用针孔估算深度作为fallback, 保持PnP方向
             double scale = tz_pinhole / tz;
             tz = tz_pinhole;
             tx *= scale;
             ty *= scale;
-            ROS_INFO_THROTTLE(1, "[PoseSolver] Using pinhole fallback (mild mismatch): t=(%.4f,%.4f,%.4f), tz_ratio=%.2f", tx, ty, tz, tz_ratio);
         }
 
-        if (std::abs(tx) > tz * 3.0 || std::abs(ty) > tz * 3.0)
-        {
-            ROS_WARN_THROTTLE(1, "[PoseSolver] REJECTED: tx=%.4f or ty=%.4f out of cone (tz=%.4f)", tx, ty, tz);
-            return false;
-        }
+        if (std::abs(tx) > tz * 3.0 || std::abs(ty) > tz * 3.0) return false;
 
         Eigen::Vector3d rvec_eigen;
         rvec_eigen << rvec.at<double>(0), rvec.at<double>(1), rvec.at<double>(2);
@@ -171,7 +142,7 @@ namespace rm_radarplugin
         return true;
     }
 
-    double PoseSolver::calReprojectCost(const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+    double PoseSolverCore::calReprojectCost(const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
                                         const cv::Mat& K, const cv::Mat& D,
                                         double current_yaw, double yaw_center)
     {
@@ -185,7 +156,6 @@ namespace rm_radarplugin
         
         std::vector<double> u_arr(n), v_arr(n);
 
-        // Loop 1: 投影 + 位置误差
         for (size_t i = 0; i < n; i++)
         {
             double X = armor_3d_points_[i].x;
@@ -221,7 +191,6 @@ namespace rm_radarplugin
             total_cost += huberLoss(cost, opt_params_.huber_delta_px);
         }
 
-        // Loop 2: 形状误差
         for(size_t i = 0; i < n; i++)
         {
             size_t next_i = (i + 1) % n;
@@ -238,25 +207,17 @@ namespace rm_radarplugin
         
         if (opt_params_.prior_weight > 0.0) 
         {
-        double yaw_diff = std::abs(current_yaw - yaw_center);
-        // 对偏离进行二次惩罚
-        total_cost += opt_params_.prior_weight * yaw_diff * yaw_diff;
+            double yaw_diff = std::abs(current_yaw - yaw_center);
+            total_cost += opt_params_.prior_weight * yaw_diff * yaw_diff;
         }
 
         return total_cost;
     }
 
-    void PoseSolver::optimizeTranslation(const Eigen::Matrix3d& R)
+    void PoseSolverCore::optimizeTranslation(const Eigen::Matrix3d& R)
     {
-        // Safety check: ensure undistorted_points_ has 4 elements
-        if (undistorted_points_.size() != 4) {
-            ROS_WARN_THROTTLE(1, "undistorted_points_ size is %lu, expected 4. Skipping translation optimization.", 
-                undistorted_points_.size());
-            return;
-        }
+        if (undistorted_points_.size() != 4) return;
         
-        // Implementation of translation optimization
-        // armor_3d_points_ 有 4 个点，所以是 8 行
         Eigen::Matrix<double, 8, 3> A;
         Eigen::Matrix<double, 8, 1> b;
         
@@ -285,13 +246,11 @@ namespace rm_radarplugin
             b(row+1, 0) = my * RP_z - RP_y;
         }
         
-        //(A^T * A) * x = A^T * b
         tvec_ = (A.transpose() * A).ldlt().solve(A.transpose() * b);
     }
 
-    void PoseSolver::optimizeYaw()
+    void PoseSolverCore::optimizeYaw()
     {
-        // Implementation of yaw optimization
         const double pitch = opt_params_.fixed_pitch;
         Eigen::Quaterniond q_init(q_.w(), q_.x(), q_.y(), q_.z());
         Eigen::Matrix3d R_init = q_init.toRotationMatrix();
@@ -334,37 +293,26 @@ namespace rm_radarplugin
             }
         };
 
-        // First run a coarse search around the initial yaw
         runSearch(yaw_center, opt_params_.big_range, opt_params_.big_step);
-        // Then run a finer search around the best yaw found
         runSearch(best_yaw, opt_params_.small_range, opt_params_.small_step);
 
-        // Update the optimized pose
         Eigen::Matrix3d R_final = getRotationMatrix(best_yaw);
         optimized_q_ = Eigen::Quaterniond(R_final);
         optimized_q_.normalize();
         tvec_ = best_t;
     }
 
-
-
-    // pose solver callback - handles single best detection from img_proc
-    void PoseSolver::PoseSolverCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection)
+    void PoseSolverCore::poseSolverCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection)
     {
         if (!detection)
         {
-            ROS_WARN_THROTTLE(2, "[PoseSolver] Received null DroneDetection pointer");
+            ROS_WARN_THROTTLE(1, "[PoseSolver] Received empty detection.");
             return;
-        }
-
-        if (verbose_log_)
-        {
-            ROS_INFO_THROTTLE(2, "[PoseSolver] Received single detection from imgproc (confidence=%.3f)", detection->confidence);
         }
         processSingleDetection(*detection);
     }
 
-    void PoseSolver::processSingleDetection(const rm_radar_msgs::DroneDetection& detection)
+    void PoseSolverCore::processSingleDetection(const rm_radar_msgs::DroneDetection& detection)
     {
         armor_2d_points_.clear();
         
@@ -372,38 +320,35 @@ namespace rm_radarplugin
             armor_2d_points_.emplace_back(cv::Point2d(pt.x, pt.y));
         }
 
-        if (intrinsics_.empty() || dist_coeffs_.empty()) {
-            ROS_WARN("Camera parameters not available yet. Cannot solve pose.");
+        if (intrinsics_.empty() || dist_coeffs_.empty())
+        {
+            ROS_WARN_THROTTLE(1.0, "[PoseSolver] Invalid input: intrinsics or dist_coeffs not set");
             return;
         }
-
         if(armor_2d_points_.size() != 4)
         {
-            ROS_WARN("Expected 4 armor points, but got %lu. Cannot solve pose.", armor_2d_points_.size());
+            ROS_WARN_THROTTLE(1.0, "[PoseSolver] Invalid input: armor_2d_points size != 4");
             return;
         }
-
         if(solvePose())
         {
-            // 在优化之前，先计算去畸变点和相机参数
             getReprojectParams();
-            
             optimizeYaw();
             
-            // EMA 平滑 + 毛刺拒绝
             Eigen::Vector3d raw_t = tvec_;
             Eigen::Quaterniond raw_q = optimized_q_;
             Eigen::Vector3d smoothed_t = applyEMA(raw_t, raw_q);
             
-            // 发布求解后的位姿给Tracker
+            publishTransform(detection);
+
             rm_radar_msgs::DroneDetection solved_msg = detection;
             solved_msg.is_cam_msg = true;
             solved_msg.is_lidar_msg = false;
+            
             solved_msg.pose.position.x = smoothed_t(0);
             solved_msg.pose.position.y = smoothed_t(1);
             solved_msg.pose.position.z = smoothed_t(2);
 
-            // If EMA disabled, applyEMA() already copied raw_q into ema_q_
             solved_msg.pose.orientation.x = ema_q_.x();
             solved_msg.pose.orientation.y = ema_q_.y();
             solved_msg.pose.orientation.z = ema_q_.z();
@@ -412,54 +357,39 @@ namespace rm_radarplugin
             solved_msg.centroid.x = smoothed_t(0);
             solved_msg.centroid.y = smoothed_t(1);
             solved_msg.centroid.z = smoothed_t(2);
+
             solved_pose_pub_.publish(solved_msg);
 
             if (verbose_log_) {
-                ROS_INFO_THROTTLE(1, "[PoseSolver] Published pose: raw(%.3f,%.3f,%.3f) -> %s(%.3f,%.3f,%.3f)",
-                    raw_t(0), raw_t(1), raw_t(2),
+                NODELET_INFO_THROTTLE(1, "[PoseSolver] Published pose in %s frame: %s(%.3f,%.3f,%.3f)",
+                    detection.header.frame_id.c_str(),
                     use_ema_ ? "smoothed" : "raw",
                     smoothed_t(0), smoothed_t(1), smoothed_t(2));
             }
         }
         else
         {
-            ROS_WARN_THROTTLE(1, "(2D pts: (%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f), cam_info=%s)",
-                              armor_2d_points_.size() > 0 ? armor_2d_points_[0].x : -1,
-                              armor_2d_points_.size() > 0 ? armor_2d_points_[0].y : -1,
-                              armor_2d_points_.size() > 1 ? armor_2d_points_[1].x : -1,
-                              armor_2d_points_.size() > 1 ? armor_2d_points_[1].y : -1,
-                              armor_2d_points_.size() > 2 ? armor_2d_points_[2].x : -1,
-                              armor_2d_points_.size() > 2 ? armor_2d_points_[2].y : -1,
-                              armor_2d_points_.size() > 3 ? armor_2d_points_[3].x : -1,
-                              armor_2d_points_.size() > 3 ? armor_2d_points_[3].y : -1,
-                              (!intrinsics_.empty()) ? "OK" : "MISSING");
+            ROS_WARN_THROTTLE(1, "[PoseSolver] Pose solving failed for current detection.");
         }
     }
 
-    void PoseSolver::publishTransform(const rm_radar_msgs::DroneDetection& detection)
+    void PoseSolverCore::publishTransform(const rm_radar_msgs::DroneDetection& detection)
     {
         std::string child_frame_id = "drone";
-        try
-        {
-            geometry_msgs::TransformStamped tf;
-            tf.header = detection.header;
-            tf.header.frame_id = detection.header.frame_id;
-            tf.child_frame_id = child_frame_id;
-            tf.transform.translation.x = tvec_(0);
-            tf.transform.translation.y = tvec_(1);
-            tf.transform.translation.z = tvec_(2);
-            tf.transform.rotation.x = optimized_q_.x();
-            tf.transform.rotation.y = optimized_q_.y();
-            tf.transform.rotation.z = optimized_q_.z();
-            tf.transform.rotation.w = optimized_q_.w();
+        
+        geometry_msgs::TransformStamped tf;
+        tf.header = detection.header;
+        tf.child_frame_id = child_frame_id;
+        tf.transform.translation.x = tvec_(0);
+        tf.transform.translation.y = tvec_(1);
+        tf.transform.translation.z = tvec_(2);
+        tf.transform.rotation.x = optimized_q_.x();
+        tf.transform.rotation.y = optimized_q_.y();
+        tf.transform.rotation.z = optimized_q_.z();
+        tf.transform.rotation.w = optimized_q_.w();
 
-            tf_broadcaster_->sendTransform(tf);
-        }
-        catch(tf2::TransformException& e)
-        {
-            ROS_ERROR("Failed to publish transform: %s", e.what());
-        }
-
+        tf_broadcaster_->sendTransform(tf);
     }
+
 
 } // namespace rm_radarplugin

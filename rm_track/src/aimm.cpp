@@ -170,14 +170,6 @@ constexpr double AIMM::LIKELIHOOD_FLOOR;
             return filters_[0]->getMeasurementNoise();
         return Eigen::Matrix3d::Identity() * 0.1;
     }
-
-    Eigen::MatrixXd AIMM::getBaseMeasurementNoise() const
-    {
-        if (!filters_.empty())
-            return filters_[0]->getBaseMeasurementNoise();
-        return Eigen::Matrix3d::Identity() * 0.1;
-    }
-
     // ============================================================
     // Step 0: Compute mixing probabilities μ_{i|j}
     // ============================================================

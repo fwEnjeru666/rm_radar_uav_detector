@@ -41,7 +41,6 @@ namespace rm_radarplugin
             }
         }
 
-        // Backward-compatible fallback: treat selector as direct index.
         if (selector >= 0 && selector < static_cast<int>(loaded_models_.size()))
         {
             return selector;
@@ -56,83 +55,102 @@ namespace rm_radarplugin
         return 0;
     }
 
-    void Tracker::loadProjectionParams()
+    void Tracker::applyProjectionParamsToModels(const CameraIntrinsics& intrinsics)
     {
         std::lock_guard<std::mutex> lock(projection_mutex_);
-        // Intrinsics are sourced from CameraInfo at runtime.
-        projection_params_.fx = 0.0;
-        projection_params_.fy = 0.0;
-        projection_params_.cx = 0.0;
-        projection_params_.cy = 0.0;
-        projection_params_.armor_width = nh_.param("armor_width", projection_params_.armor_width);
-        projection_params_.armor_height = nh_.param("armor_height", projection_params_.armor_height);
-    }
-
-    void Tracker::applyProjectionParamsToModels()
-    {
-        std::lock_guard<std::mutex> lock(projection_mutex_);
-        for (auto& model : loaded_models_)
-        {
-            if (!model)
-            {
-                continue;
-            }
-            model->setProjectionParams(
-                projection_params_.fx,
-                projection_params_.fy,
-                projection_params_.cx,
-                projection_params_.cy,
-                projection_params_.armor_width,
-                projection_params_.armor_height);
+        for (auto& model : loaded_models_) {
+            if (!model) continue;
+            model->setProjectionParams(intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy,
+                                       projection_params_.armor_width, projection_params_.armor_height);
         }
     }
 
-    void Tracker::camInfoCB(const sensor_msgs::CameraInfoConstPtr& cam_info)
+    void Tracker::camInfoCB(const sensor_msgs::CameraInfoConstPtr& cam_info) 
     {
-        if (!cam_info)
-        {
-            return;
-        }
+        if (!cam_info || cam_info->K[0] <= 1e-6) return;
+        std::lock_guard<std::mutex> lock(projection_mutex_);
+        std::string frame_id = cam_info->header.frame_id;
+        CameraIntrinsics& intrinsics = camera_intrinsics_map_[frame_id];
+        intrinsics.fx = cam_info->K[0]; intrinsics.fy = cam_info->K[4];
+        intrinsics.cx = cam_info->K[2]; intrinsics.cy = cam_info->K[5];
+        for (size_t i = 0; i < 9; ++i) intrinsics.K[i] = cam_info->K[i];
+        intrinsics.D = cam_info->D;
+    }
 
-        const double fx = cam_info->K[0];
-        const double fy = cam_info->K[4];
-        const double cx = cam_info->K[2];
-        const double cy = cam_info->K[5];
-        if (fx <= 1e-6 || fy <= 1e-6)
-        {
-            ROS_WARN_THROTTLE(1.0, "[Tracker] Ignoring invalid CameraInfo intrinsics fx=%.3f fy=%.3f", fx, fy);
-            return;
-        }
+    void Tracker::teleDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection)
+    {
+        std::lock_guard<std::mutex> lock(tele_cam_mutex_);
+        latest_tele_cam_detection_ = detection;
+        last_tele_receive_time_ = ros::WallTime::now();
+    }
 
-        bool changed = false;
+    void Tracker::wideDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection)
+    {
+        std::lock_guard<std::mutex> lock(wide_cam_mutex_);
+        latest_wide_cam_detection_ = detection;
+        last_wide_receive_time_ = ros::WallTime::now();
+    }
+
+    bool Tracker::processVisionMeasurement(const rm_radar_msgs::DroneDetection::ConstPtr& cam_msg, 
+                                           Eigen::VectorXd& z_meas, Eigen::Vector3d& z_init, std::string& active_frame_id) 
+    {
+        if (cam_msg->is_lidar_msg) return false;
+        active_frame_id = cam_msg->header.frame_id;
+        CameraIntrinsics current_intrinsics;
         {
             std::lock_guard<std::mutex> lock(projection_mutex_);
-            changed = (!has_camera_info_) ||
-                      (std::abs(projection_params_.fx - fx) > 1e-6) ||
-                      (std::abs(projection_params_.fy - fy) > 1e-6) ||
-                      (std::abs(projection_params_.cx - cx) > 1e-6) ||
-                      (std::abs(projection_params_.cy - cy) > 1e-6);
-            if (!changed)
-            {
-                return;
-            }
-
-            projection_params_.fx = fx;
-            projection_params_.fy = fy;
-            projection_params_.cx = cx;
-            projection_params_.cy = cy;
-            for (size_t i = 0; i < camera_k_.size(); ++i)
-            {
-                camera_k_[i] = cam_info->K[i];
-            }
-            camera_d_ = cam_info->D;
-            has_camera_info_ = true;
+            if (camera_intrinsics_map_.find(active_frame_id) == camera_intrinsics_map_.end()) return false;
+            current_intrinsics = camera_intrinsics_map_[active_frame_id];
         }
 
-        applyProjectionParamsToModels();
-        ROS_INFO_THROTTLE(2.0,
-                          "[Tracker] Updated projection intrinsics from CameraInfo: fx=%.2f fy=%.2f cx=%.2f cy=%.2f",
-                          fx, fy, cx, cy);
+        if (active_frame_id != last_active_frame_id_) 
+        {
+            applyProjectionParamsToModels(current_intrinsics);
+            last_active_frame_id_ = active_frame_id;
+        }
+
+        Eigen::Vector3d p_cam(cam_msg->pose.position.x, cam_msg->pose.position.y, cam_msg->pose.position.z);
+        Eigen::Vector3d p_odom;
+        
+        // TF将相机坐标系下的测量转换至 odom 坐标系
+        if (p_cam.norm() >= 0.01 && transform2Odom(cam_msg->header, p_cam, p_odom)) 
+        {
+            z_init = p_odom;
+            if (force_3d_measurement_) { 
+                z_meas = z_init; 
+            } 
+            else if (cam_msg->armor_points.size() == 4) {
+                cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
+                for (int r=0; r<3; ++r) for(int c=0; c<3; ++c) K.at<double>(r,c) = current_intrinsics.K[r*3+c];
+                cv::Mat D = cv::Mat::zeros(current_intrinsics.D.size(), 1, CV_64F);
+                for (size_t i=0; i<current_intrinsics.D.size(); ++i) D.at<double>(i,0) = current_intrinsics.D[i];
+                std::vector<cv::Point2f> raw_pts(4), undist_pts;
+                for (int i=0; i<4; ++i) raw_pts[i] = cv::Point2f(cam_msg->armor_points[i].x, cam_msg->armor_points[i].y);
+                cv::undistortPoints(raw_pts, undist_pts, K, D, cv::noArray(), K);
+                if (undist_pts.size() == 4) {
+                    z_meas = Eigen::VectorXd::Zero(8);
+                    for (int i=0; i<4; ++i) { z_meas(2*i) = undist_pts[i].x; z_meas(2*i+1) = undist_pts[i].y; }
+                } else return false;
+            } else return false;
+
+            tf2::Quaternion q_new(cam_msg->pose.orientation.x, cam_msg->pose.orientation.y, cam_msg->pose.orientation.z, cam_msg->pose.orientation.w);
+            if (q_new.length() > 0.001) 
+            {
+                q_new.normalize();
+                if (q_track_valid_ && (q_track_.x()*q_new.x() + q_track_.y()*q_new.y() + q_track_.z()*q_new.z() + q_track_.w()*q_new.w() < 0)) 
+                    q_new = tf2::Quaternion(-q_new.x(), -q_new.y(), -q_new.z(), -q_new.w());
+                q_track_ = q_new; q_track_valid_ = true;
+            }
+
+            // 紧耦合更新外参
+            if (!force_3d_measurement_) 
+            {
+                getProjectionExtrinsic(cam_msg->header);
+            }
+
+            return true;
+        }
+        return false;
     }
 
     void Tracker::onInit()
@@ -143,8 +161,6 @@ namespace rm_radarplugin
         ROS_INFO("[Tracker] Nodelet name: %s, private namespace: %s",
                  getName().c_str(), nh_.getNamespace().c_str());
 
-        // Parameters from parameter server
-        // These are the initial values. They can be changed dynamically.
         use_aimm_ = nh_.param("use_aimm", false);
         target_frame_ = nh_.param("target_frame", std::string("odom"));
         hit_threshold_ = nh_.param("hit_threshold", 3);
@@ -159,8 +175,10 @@ namespace rm_radarplugin
         use_lidar_fusion_ = nh_.param("use_lidar_fusion", true);
         lidar_timeout_ = nh_.param("lidar_timeout", 0.5);
         vision_timeout_ = nh_.param("vision_timeout", 0.3);
-        pixel_noise_u_ = nh_.param("pixel_noise_u", 4.0);
-        pixel_noise_v_ = nh_.param("pixel_noise_v", 4.0);
+        tele_pixel_noise_u_ = nh_.param("tele_pixel_noise_u", 4.0);
+        tele_pixel_noise_v_ = nh_.param("tele_pixel_noise_v", 4.0);
+        wide_pixel_noise_u_ = nh_.param("wide_pixel_noise_u", 4.0);
+        wide_pixel_noise_v_ = nh_.param("wide_pixel_noise_v", 4.0);
         force_3d_measurement_ = nh_.param("force_3d_measurement", false);
         enable_pixel_gating_ = nh_.param("enable_pixel_gating", true);
         enable_3d_fallback_ = nh_.param("enable_3d_fallback", true);
@@ -170,24 +188,21 @@ namespace rm_radarplugin
         pixel_reproj_rmse_gate_far_ = nh_.param("pixel_reproj_rmse_gate_far", 30.0);
         pixel_gate_distance_near_ = nh_.param("pixel_gate_distance_near", 8.0);
         pixel_gate_distance_far_ = nh_.param("pixel_gate_distance_far", 18.0);
-        cam_info_topic_ = nh_.param<std::string>("cam_info_topic", "/hk_camera/camera_info");
 
-        // ROS Interfaces
-        cam_info_sub_ = nh_.subscribe(cam_info_topic_, 1, &Tracker::camInfoCB, this);
-        detection_sub_ = nh_.subscribe("/pose_solver/solved_pose", 10, &Tracker::camDetectionCB, this);
+        tele_cam_info_sub_ = nh_.subscribe("/tele_camera/camera_info", 1, &Tracker::camInfoCB, this);
+        tele_detection_sub_ = nh_.subscribe("/tele_camera/detection", 10, &Tracker::teleDetectionCB, this);
+        wide_cam_info_sub_ = nh_.subscribe("/wide_camera/camera_info", 1, &Tracker::camInfoCB, this);
+        wide_detection_sub_ = nh_.subscribe("/wide_camera/detection", 10, &Tracker::wideDetectionCB, this);
         lidar_detection_sub_ = nh_.subscribe("/lidar_detector/lidar_detection", 1, &Tracker::lidarDetectionCB, this);
         tracker_pub_ = nh_.advertise<rm_msgs::TrackData>("/tracker/track_data", 1);
         aimm_debug_pub_ = nh_.advertise<rm_radar_msgs::aimm_debugger>("/tracker/aimm_debug", 1);
 
-        // TF
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(ros::Duration(10));
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
         tf_broadcaster_ =  std::make_shared<tf2_ros::TransformBroadcaster>();
 
-        // Timer for processing detections
-        detection_timer_ = nh_.createTimer(ros::Duration(0.01), &Tracker::detectionCB, this);  
+        detection_timer_ = nh_.createTimer(ros::Duration(0.02), &Tracker::detectionCB, this);  
 
-        // Initialize the model manager and load models
         model_manager_ = std::make_shared<model_register>(nh_);
         if (model_manager_->load_models() == 0)
         {
@@ -197,18 +212,13 @@ namespace rm_radarplugin
         }
         loaded_models_ = model_manager_->get_all_models();
         loaded_model_names_ = model_manager_->get_model_names();
-        loadProjectionParams();
-        applyProjectionParamsToModels();
-        ROS_INFO("[Tracker] Projection params initialized (armor size only); waiting CameraInfo on %s for intrinsics.",
-             cam_info_topic_.c_str());
 
-        // Create filter instances
         aimm_ = std::make_shared<AIMM>(nh_, loaded_models_);
         ROS_INFO("[Tracker] Initialized AIMM with %lu models.", loaded_models_.size());
 
-        // Use initial parameter for pure_ukf_model_type to select the model
         pure_ukf_model_selector_ = nh_.param("pure_ukf_model_type", 0);
-        if (loaded_models_.empty()) {
+        if (loaded_models_.empty()) 
+        {
             ROS_ERROR("[Tracker] No models loaded. Cannot initialize UKF.");
             ros::shutdown();
             return;
@@ -218,16 +228,11 @@ namespace rm_radarplugin
         ros::NodeHandle pure_ukf_nh(nh_, "pure_ukf");
         ukf_ = std::make_shared<UKF>(pure_ukf_nh, loaded_models_[pure_ukf_model_idx_]);
 
-        // Initialize other components
-        pose_solver_.onInit(nh);
-
-        // Initialize dynamic reconfigure server LAST
         track_cfg_srv_.reset(new dynamic_reconfigure::Server<rm_track::trackConfig>(nh_));
         track_cfg_cb_ = boost::bind(&Tracker::trackconfigCB, this, _1, _2);
         track_cfg_srv_->setCallback(track_cfg_cb_);
         ROS_INFO("[Tracker] Dynamic reconfigure attached at namespace: %s", nh_.getNamespace().c_str());
 
-        // Initial status log will be printed by the first trackconfigCB call
         ROS_INFO("[Tracker] Initialized successfully.");
     }
 
@@ -279,7 +284,6 @@ namespace rm_radarplugin
 
     void Tracker::trackconfigCB(rm_track::trackConfig& config, uint32_t level)
     {
-        // Update basic parameters
         (void)level;
         hit_threshold_ = config.hit_threshold;
         max_lost_count_ = config.max_lost_count;
@@ -290,8 +294,23 @@ namespace rm_radarplugin
         debug_mode_ = config.debug_mode;
         aimm_debug_mode_ = config.aimm_debug_mode;
         state_log_mode_ = config.state_log_mode;
-        pixel_noise_u_ = config.pixel_noise_u;
-        pixel_noise_v_ = config.pixel_noise_v;
+        tele_pixel_noise_u_ = config.tele_pixel_noise_u;
+        tele_pixel_noise_v_ = config.tele_pixel_noise_v;
+        wide_pixel_noise_u_ = config.wide_pixel_noise_u;
+        wide_pixel_noise_v_ = config.wide_pixel_noise_v;
+        getPixelMeasurementNoise();
+
+        tele_r_pos_xy_ = config.tele_r_pos_xy;
+        tele_r_pos_z_ = config.tele_r_pos_z;
+        tele_r_yaw_ = config.tele_r_yaw;
+        wide_r_pos_xy_ = config.wide_r_pos_xy;
+        wide_r_pos_z_ = config.wide_r_pos_z;
+        wide_r_yaw_ = config.wide_r_yaw;
+        lidar_r_pos_xy_ = config.lidar_r_pos_xy;
+        lidar_r_pos_z_ = config.lidar_r_pos_z;
+        lidar_r_yaw_ = config.lidar_r_yaw;
+        get3DMeasurementNoise();
+
         force_3d_measurement_ = config.force_3d_measurement;
         enable_pixel_gating_ = config.enable_pixel_gating;
         enable_3d_fallback_ = config.enable_3d_fallback;
@@ -306,19 +325,16 @@ namespace rm_radarplugin
         std::stringstream log_msg;
         log_msg << "[Tracker] Configuration updated. ";
 
-        // Check for estimator type change (AIMM vs UKF)
         if (config.use_aimm != use_aimm_) {
             use_aimm_ = config.use_aimm;
             needs_reset = true;
         }
 
-        // Check for pure UKF model change
         if (config.pure_ukf_model_type != pure_ukf_model_selector_) {
             pure_ukf_model_selector_ = config.pure_ukf_model_type;
             const int resolved_idx = resolvePureUkfModelIndex(pure_ukf_model_selector_, true);
             if (resolved_idx != pure_ukf_model_idx_) {
                 pure_ukf_model_idx_ = resolved_idx;
-                // If we are currently in pure UKF mode, apply the model change immediately
                 if (!use_aimm_) {
                     ukf_->setModel(loaded_models_[pure_ukf_model_idx_]);
                     needs_reset = true;
@@ -326,19 +342,22 @@ namespace rm_radarplugin
             }
         }
 
-        if (needs_reset) {
+        if (needs_reset) 
+        {
             track_state_ = rm_track::LOST;
             is_tracking_ = false;
             q_track_valid_ = false;
         }
 
-        // Log the current state
-        if (use_aimm_) {
+        if (use_aimm_) 
+        {
             log_msg << "Estimator: AIMM.";
-        } else {
+        } else 
+        {
             log_msg << "Estimator: UKF, Model: " << loaded_model_names_[pure_ukf_model_idx_] << ".";
         }
-        if (needs_reset) {
+        if (needs_reset) 
+        {
             log_msg << " Filter state has been reset.";
         }
         log_msg << " Force3D=" << (force_3d_measurement_ ? "ON" : "OFF");
@@ -353,21 +372,9 @@ namespace rm_radarplugin
         last_lidar_time_ = detection->header.stamp;
         last_lidar_receive_time_ = ros::WallTime::now();
         
-        if (debug_mode_) {
+        if (debug_mode_) 
+        {
             ROS_INFO_THROTTLE(1, "[Tracker] LiDAR detection: (%.3f, %.3f, %.3f)",
-                detection->pose.position.x, detection->pose.position.y, detection->pose.position.z);
-        }
-    }
-
-    void Tracker::camDetectionCB(const rm_radar_msgs::DroneDetection::ConstPtr& detection)
-    {
-        std::lock_guard<std::mutex> lock(cam_mutex_);
-        latest_cam_detection_ = detection;
-        last_cam_time_ = detection->header.stamp;
-        last_cam_receive_time_ = ros::WallTime::now();
-
-        if (debug_mode_) {       
-            ROS_INFO_THROTTLE(1, "[Tracker] Vision detection: (%.3f, %.3f, %.3f)",
                 detection->pose.position.x, detection->pose.position.y, detection->pose.position.z);
         }
     }
@@ -387,16 +394,18 @@ namespace rm_radarplugin
 
         try 
         {
-            // 降低阻塞超时时间，避免大于定时器周期造成积压
             geometry_msgs::TransformStamped transform_stamped = tf_buffer_->lookupTransform(
                 target_frame_, header.frame_id, header.stamp, ros::Duration(0.005));
             tf2::doTransform(point_in, point_out, transform_stamped);
+            if(debug_mode_) {
+                ROS_INFO_THROTTLE(1, "[Tracker] TF transf+++orm success: %s -> %s at t=%.3f",
+                    header.frame_id.c_str(), target_frame_.c_str(), header.stamp.toSec());
+            }
         } 
         catch (tf2::TransformException &ex) 
         {
             try 
             {
-                // 异常回退使用的非阻塞查询
                 geometry_msgs::TransformStamped transform_stamped = tf_buffer_->lookupTransform(
                     target_frame_, header.frame_id, ros::Time(0), ros::Duration(0.0));
                 tf2::doTransform(point_in, point_out, transform_stamped);
@@ -417,7 +426,7 @@ namespace rm_radarplugin
         return true;
     }
 
-    bool Tracker::updateProjectionExtrinsic(const std_msgs::Header& header)
+    bool Tracker::getProjectionExtrinsic(const std_msgs::Header& header)
     {
         if (header.frame_id.empty())
         {
@@ -469,300 +478,154 @@ namespace rm_radarplugin
         return true;
     }
 
-    void Tracker::detectionCB(const ros::TimerEvent& event)
+    void Tracker::getPixelMeasurementNoise() 
+    { 
+        std::lock_guard<std::mutex> lock(noise_mtx_);
+        R_tele_pixel_.setZero(8, 8); 
+        R_wide_pixel_.setZero(8, 8); 
+        
+        double u_var_tele = tele_pixel_noise_u_ * tele_pixel_noise_u_; 
+        double v_var_tele = tele_pixel_noise_v_ * tele_pixel_noise_v_; 
+        double u_var_wide = wide_pixel_noise_u_ * wide_pixel_noise_u_; 
+        double v_var_wide = wide_pixel_noise_v_ * wide_pixel_noise_v_; 
+        
+        for (int i = 0; i < 4; ++i) {
+            R_tele_pixel_(2*i, 2*i) = u_var_tele;      
+            R_tele_pixel_(2*i+1, 2*i+1) = v_var_tele;  
+            R_wide_pixel_(2*i, 2*i) = u_var_wide;     
+            R_wide_pixel_(2*i+1, 2*i+1) = v_var_wide;  
+        }
+    }
+
+    void Tracker::get3DMeasurementNoise() 
+    { 
+        std::lock_guard<std::mutex> lock(noise_mtx_);
+        R_tele_.setZero(3, 3); 
+        R_wide_.setZero(3, 3); 
+        R_lidar_.setZero(3, 3); 
+
+        R_tele_(0, 0) = tele_r_pos_xy_ * tele_r_pos_xy_; 
+        R_tele_(1, 1) = tele_r_pos_xy_ * tele_r_pos_xy_; 
+        R_tele_(2, 2) = tele_r_pos_z_ * tele_r_pos_z_; 
+
+        R_wide_(0, 0) = wide_r_pos_xy_ * wide_r_pos_xy_; 
+        R_wide_(1, 1) = wide_r_pos_xy_ * wide_r_pos_xy_; 
+        R_wide_(2, 2) = wide_r_pos_z_ * wide_r_pos_z_; 
+
+        R_lidar_(0, 0) = lidar_r_pos_xy_ * lidar_r_pos_xy_; 
+        R_lidar_(1, 1) = lidar_r_pos_xy_ * lidar_r_pos_xy_; 
+        R_lidar_(2, 2) = lidar_r_pos_z_ * lidar_r_pos_z_; 
+    }
+
+
+    void Tracker::detectionCB(const ros::TimerEvent& event) 
     {   
-        (void)event;
         ros::Time now = ros::Time::now();
+        rm_radar_msgs::DroneDetection::ConstPtr msg_tele = nullptr, msg_wide = nullptr, msg_lidar = nullptr;
+        ros::WallTime t_tele, t_wide, t_lidar;
 
-        rm_radar_msgs::DroneDetection::ConstPtr current_lidar_msg_ = nullptr;
-        rm_radar_msgs::DroneDetection::ConstPtr current_cam_msg_ = nullptr;
-        ros::WallTime cam_receive_time;
-        ros::WallTime lidar_receive_time;
+        { std::lock_guard<std::mutex> lock(tele_cam_mutex_); if (latest_tele_cam_detection_) { msg_tele = latest_tele_cam_detection_; t_tele = last_tele_receive_time_; latest_tele_cam_detection_ = nullptr; } }
+        { std::lock_guard<std::mutex> lock(wide_cam_mutex_); if (latest_wide_cam_detection_) { msg_wide = latest_wide_cam_detection_; t_wide = last_wide_receive_time_; latest_wide_cam_detection_ = nullptr; } }
+        { std::lock_guard<std::mutex> lock(lidar_mutex_); if (latest_lidar_detection_) { msg_lidar = latest_lidar_detection_; t_lidar = last_lidar_receive_time_; latest_lidar_detection_ = nullptr; } }
 
-        {
-            std::lock_guard<std::mutex> lock(cam_mutex_);
-            if (latest_cam_detection_) {
-                current_cam_msg_ = latest_cam_detection_;
-                cam_receive_time = last_cam_receive_time_;
-                latest_cam_detection_ = nullptr;
-            }
-        }
-        {
-            std::lock_guard<std::mutex> lock(lidar_mutex_);
-            if (latest_lidar_detection_) {
-                current_lidar_msg_ = latest_lidar_detection_;
-                lidar_receive_time = last_lidar_receive_time_;
-            }
-        }
+        ros::WallTime now_wall = ros::WallTime::now();
+        double age_tele = t_tele.isZero() ? 999.0 : (now_wall - t_tele).toSec();
+        double age_wide = t_wide.isZero() ? 999.0 : (now_wall - t_wide).toSec();
+        double age_lidar = t_lidar.isZero() ? 999.0 : (now_wall - t_lidar).toSec();
 
-        const ros::WallTime now_wall = ros::WallTime::now();
-        const double cam_age = cam_receive_time.isZero() ? std::numeric_limits<double>::infinity() : (now_wall - cam_receive_time).toSec();
-        const double lidar_age = lidar_receive_time.isZero() ? std::numeric_limits<double>::infinity() : (now_wall - lidar_receive_time).toSec();
-
-        if (last_time_.isZero()) {
-            last_time_ = now;
-            return;
-        }
-
+        if (last_time_.isZero() || (now - last_time_).toSec() < 0.001 || (now - last_time_).toSec() > 1.0) { last_time_ = now; return; }
         double dt = (now - last_time_).toSec();
-        if (dt < 0.001 || dt > 1.0) {
-            last_time_ = now;
-            return;
-        }
 
-        Eigen::VectorXd z_meas;
-        Eigen::Vector3d z_init = Eigen::Vector3d::Zero();
-        bool has_data = false;
-        bool is_vision_active = false;
-        bool is_cam_msg = false;
-        bool is_lidar_msg = false;
+        Eigen::VectorXd z_meas; Eigen::Vector3d z_init = Eigen::Vector3d::Zero();
+        bool has_data = false, is_cam_msg = false, is_lidar_msg = false;
+        std::string active_frame_id = "";
 
-        // Vision first
-        if (current_cam_msg_ && cam_age < vision_timeout_)
-        {
-            if (current_cam_msg_->is_lidar_msg)
-            {
-                ROS_WARN_THROTTLE(1.0,
-                                  "[Tracker] Drop cross-source msg on vision branch: is_lidar_msg=true (topic=/pose_solver/solved_pose)");
+        if (msg_tele && age_tele < vision_timeout_) {
+            if (processVisionMeasurement(msg_tele, z_meas, z_init, active_frame_id)) {
+                has_data = true; is_cam_msg = true; current_time_ = msg_tele->header.stamp;
             }
-            else
-            {
-                bool has_cam_info = false;
-                std::array<double, 9> camera_k_local{};
-                std::vector<double> camera_d_local;
-                {
-                    std::lock_guard<std::mutex> lock(projection_mutex_);
-                    has_cam_info = has_camera_info_;
-                    camera_k_local = camera_k_;
-                    camera_d_local = camera_d_;
-                }
-                if (!has_cam_info)
-                {
-                    ROS_WARN_THROTTLE(1.0,
-                                      "[Tracker] Waiting for CameraInfo on %s, skip vision measurement this frame.",
-                                      cam_info_topic_.c_str());
-                }
-
-                Eigen::Vector3d p_cam(current_cam_msg_->pose.position.x, current_cam_msg_->pose.position.y, current_cam_msg_->pose.position.z);
-                Eigen::Vector3d p_odom;
-                updateProjectionExtrinsic(current_cam_msg_->header);
-
-                if (has_cam_info && p_cam.norm() >= 0.01 && transform2Odom(current_cam_msg_->header, p_cam, p_odom))
-                {
-                    z_init = p_odom;
-                    bool vision_measurement_valid = true;
-                    bool has_4_corners = current_cam_msg_->armor_points.size() == 4;
-                    if (force_3d_measurement_)
-                    {
-                        z_meas = z_init;
-                    }
-                    else if (has_4_corners)
-                    {
-                        cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
-                        for (int r = 0; r < 3; ++r)
-                        {
-                            for (int c = 0; c < 3; ++c)
-                            {
-                                K.at<double>(r, c) = camera_k_local[r * 3 + c];
-                            }
-                        }
-                        cv::Mat D;
-                        if (!camera_d_local.empty())
-                        {
-                            D = cv::Mat::zeros(static_cast<int>(camera_d_local.size()), 1, CV_64F);
-                            for (size_t i = 0; i < camera_d_local.size(); ++i)
-                            {
-                                D.at<double>(static_cast<int>(i), 0) = camera_d_local[i];
-                            }
-                        }
-
-                        std::vector<cv::Point2f> raw_points(4);
-                        for (int i = 0; i < 4; ++i)
-                        {
-                            raw_points[i] = cv::Point2f(
-                                static_cast<float>(current_cam_msg_->armor_points[i].x),
-                                static_cast<float>(current_cam_msg_->armor_points[i].y));
-                        }
-
-                        std::vector<cv::Point2f> undistorted_points;
-                        cv::undistortPoints(raw_points, undistorted_points, K, D, cv::noArray(), K);
-                        if (undistorted_points.size() != 4)
-                        {
-                            ROS_WARN_THROTTLE(1.0, "[Tracker] Undistort failed, skip vision measurement this frame.");
-                            vision_measurement_valid = false;
-                        }
-                        else
-                        {
-                            z_meas = Eigen::VectorXd::Zero(8);
-                            for (int i = 0; i < 4; ++i)
-                            {
-                                z_meas(2 * i) = undistorted_points[i].x;
-                                z_meas(2 * i + 1) = undistorted_points[i].y;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        if (enable_3d_fallback_)
-                        {
-                            z_meas = z_init;
-                        }
-                        else
-                        {
-                            vision_measurement_valid = false;
-                            ROS_WARN_THROTTLE(1.0,
-                                              "[Tracker] Strict 8D mode: armor corners != 4, skip vision update.");
-                        }
-                    }
-                    has_data = vision_measurement_valid;
-                    is_vision_active = vision_measurement_valid;
-                    if (vision_measurement_valid)
-                    {
-                        is_cam_msg = true;
-                        is_lidar_msg = false;
-                        current_time_ = current_cam_msg_->header.stamp;
-                    }
-
-                    tf2::Quaternion q_new(
-                        current_cam_msg_->pose.orientation.x, current_cam_msg_->pose.orientation.y,
-                        current_cam_msg_->pose.orientation.z, current_cam_msg_->pose.orientation.w);
-                    if (q_new.length() > 0.001 && q_new.length() < 2.0)
-                    {
-                        q_new.normalize();
-                        if (q_track_valid_) {
-                            double dot = q_track_.x() * q_new.x() + q_track_.y() * q_new.y() +
-                                         q_track_.z() * q_new.z() + q_track_.w() * q_new.w();
-                            if (dot < 0) q_new = tf2::Quaternion(-q_new.x(), -q_new.y(), -q_new.z(), -q_new.w());
-                        }
-                        q_track_ = q_new;
-                        q_track_valid_ = true;
-                    }
-                }
+        }
+        if (!has_data && msg_wide && age_wide < vision_timeout_) {
+            if (processVisionMeasurement(msg_wide, z_meas, z_init, active_frame_id)) {
+                has_data = true; is_cam_msg = true; current_time_ = msg_wide->header.stamp;
+            }
+        }
+        if (!has_data && use_lidar_fusion_ && msg_lidar && age_lidar < lidar_timeout_) {
+            Eigen::Vector3d p_odom(msg_lidar->pose.position.x, msg_lidar->pose.position.y, msg_lidar->pose.position.z);
+            active_frame_id = msg_lidar->header.frame_id;
+            
+            if (msg_lidar->header.frame_id == "odom" || msg_lidar->header.frame_id.empty()) {
+                z_meas = p_odom; z_init = p_odom; has_data = true; is_lidar_msg = true; current_time_ = msg_lidar->header.stamp;
             }
         }
 
-        // LiDAR fallback
-        if (!has_data && use_lidar_fusion_ && current_lidar_msg_ && lidar_age < lidar_timeout_)
-        {
-            Eigen::Vector3d p_lidar(current_lidar_msg_->pose.position.x, current_lidar_msg_->pose.position.y, current_lidar_msg_->pose.position.z);
-            Eigen::Vector3d p_odom;
-
-            if (transform2Odom(current_lidar_msg_->header, p_lidar, p_odom))
-            {
-                z_meas = p_odom;
-                z_init = p_odom;
-                has_data = true;
-                is_lidar_msg = current_lidar_msg_->is_lidar_msg || !current_lidar_msg_->is_cam_msg;
-                is_cam_msg = current_lidar_msg_->is_cam_msg && !is_lidar_msg;
-                current_time_ = current_lidar_msg_->header.stamp;
-            }
-        }
-
-        // Adjust measurement noise based on source
         if (has_data && filterIsInitialized()) 
         {
-            Eigen::MatrixXd R_base = filterGetBaseMeasurementNoise();
-            
-            ///test
-            if (z_meas.size() == 8)
+            if (z_meas.size() == 8) 
             {
-                Eigen::MatrixXd R_pixel = Eigen::MatrixXd::Zero(8, 8);
-                const double u_var = pixel_noise_u_ * pixel_noise_u_;
-                const double v_var = pixel_noise_v_ * pixel_noise_v_;
-                for (int i = 0; i < 4; ++i)
+                std::lock_guard<std::mutex> lock(noise_mtx_);
+                if(active_frame_id.find("left") != std::string::npos) 
                 {
-                    R_pixel(2 * i, 2 * i) = u_var;
-                    R_pixel(2 * i + 1, 2 * i + 1) = v_var;
+                    filterSetMeasurementNoise(R_tele_pixel_);
+                } 
+                else if(active_frame_id.find("right") != std::string::npos) 
+                {
+                    filterSetMeasurementNoise(R_wide_pixel_);
+                } 
+                else 
+                {
+                    Eigen::MatrixXd R_pixel = Eigen::MatrixXd::Identity(8, 8);
+                    filterSetMeasurementNoise(R_pixel);
+                    ROS_WARN("R_pixel set to identity due to unknown camera frame_id: %s", active_frame_id.c_str()); 
                 }
-                filterSetMeasurementNoise(R_pixel);
-            }
-            else
+            } 
+            else 
             {
-                Eigen::Matrix3d R_matrix = Eigen::Matrix3d::Zero();
-                if (R_base.rows() < 3 || R_base.cols() < 3)
+                std::lock_guard<std::mutex> lock(noise_mtx_);
+                if(is_lidar_msg)
                 {
-                    R_base = Eigen::MatrixXd::Identity(3, 3);
+                    filterSetMeasurementNoise(R_lidar_);
                 }
-
-                if (is_vision_active)
+                else if(active_frame_id.find("left") != std::string::npos) 
                 {
-                    R_matrix(0, 0) = R_base(0, 0) * 1.0;
-                    R_matrix(1, 1) = R_base(1, 1) * 1.0;
-                    R_matrix(2, 2) = R_base(2, 2) * 10.0;
-                }
+                    filterSetMeasurementNoise(R_tele_);
+                } 
+                else if(active_frame_id.find("right") != std::string::npos) 
+                {
+                    filterSetMeasurementNoise(R_wide_);
+                } 
                 else
                 {
-                    R_matrix(0, 0) = R_base(0, 0) * 5.0;
-                    R_matrix(1, 1) = R_base(1, 1) * 5.0;
-                    R_matrix(2, 2) = R_base(2, 2) * 0.1;
-                }
-                filterSetMeasurementNoise(R_matrix);
-            }
-        }
-
-        if (!has_data) {
-            current_time_ = current_time_ + ros::Duration(dt); // 如果没有新数据，继续推进时间以触发预测和状态转移，+dt保持时间轴的物理连续性
-        }
-        else if (enable_pixel_gating_ && z_meas.size() == 8 && track_state_ != rm_track::LOST)
-        {
-            double nis = 0.0;
-            double rmse = 0.0;
-            double rmse_gate = 0.0;
-            const double distance = z_init.norm();
-            if (!validatePixelMeasurement(z_meas, distance, nis, rmse, rmse_gate))
-            {
-                if (enable_3d_fallback_)
-                {
-                    // Fallback to 3D pose update when 8D pixel gate fails.
-                    z_meas = z_init;
-                    has_data = true;
-
-                    Eigen::MatrixXd R_base = filterGetBaseMeasurementNoise();
-                    if (R_base.rows() < 3 || R_base.cols() < 3)
-                    {
-                        R_base = Eigen::MatrixXd::Identity(3, 3);
-                    }
-                    Eigen::Matrix3d R_matrix = Eigen::Matrix3d::Zero();
-                    R_matrix(0, 0) = R_base(0, 0) * 1.0;
-                    R_matrix(1, 1) = R_base(1, 1) * 1.0;
-                    R_matrix(2, 2) = R_base(2, 2) * 10.0;
-                    filterSetMeasurementNoise(R_matrix);
-
-                    ROS_WARN_THROTTLE(1.0,
-                                      "[Tracker] Pixel gated out -> fallback to 3D: dist=%.2f m, NIS=%.3f (cfg=%.3f), RMSE=%.3fpx (active=%.3f), cfg_rmse[n/m/f]=%.3f/%.3f/%.3f, cfg_dist[n/f]=%.2f/%.2f",
-                                      distance, nis, pixel_nis_gate_, rmse, rmse_gate,
-                                      pixel_reproj_rmse_gate_near_, pixel_reproj_rmse_gate_mid_, pixel_reproj_rmse_gate_far_,
-                                      pixel_gate_distance_near_, pixel_gate_distance_far_);
-                }
-                else
-                {
-                    has_data = false;
-                    ROS_WARN_THROTTLE(1.0,
-                                      "[Tracker] Strict 8D mode: pixel gated out, skip update. dist=%.2f m, NIS=%.3f (cfg=%.3f), RMSE=%.3fpx (active=%.3f)",
-                                      distance, nis, pixel_nis_gate_, rmse, rmse_gate);
+                    Eigen::MatrixXd R = Eigen::MatrixXd::Identity(3, 3);
+                    filterSetMeasurementNoise(R);
+                    ROS_WARN("R_3d set to identity due to unknown camera frame_id: %s", active_frame_id.c_str()); 
                 }
             }
         }
-        
+
+        if (!has_data) current_time_ = current_time_ + ros::Duration(dt);
         processTracking(has_data, is_cam_msg, is_lidar_msg, z_meas, z_init, dt);
         last_time_ = now;
     }
-
-    bool Tracker::filterIsInitialized() const {
+    bool Tracker::filterIsInitialized() const 
+    {
         return use_aimm_ ? (aimm_ && aimm_->isInitialized()) : (ukf_ && ukf_->isInitialized());
     }
 
-    void Tracker::filterSetDt(double dt) {
+    void Tracker::filterSetDt(double dt) 
+    {
         if (use_aimm_) { if (aimm_) aimm_->setDt(dt); }
         else { if (ukf_) ukf_->setDt(dt); }
     }
 
-    void Tracker::filterPredict() {
+    void Tracker::filterPredict() 
+    {
         if (use_aimm_) { if (aimm_) aimm_->predict(); }
         else { if (ukf_) ukf_->predict(); }
     }
 
-    void Tracker::filterUpdate(const Eigen::VectorXd& z_meas) {
+    void Tracker::filterUpdate(const Eigen::VectorXd& z_meas) 
+    {
         if (use_aimm_) { if (aimm_) aimm_->update(z_meas); }
         else { if (ukf_) ukf_->update(z_meas); }
     }
@@ -781,13 +644,8 @@ namespace rm_radarplugin
         return Eigen::VectorXd::Zero(9);
     }
 
-    Eigen::MatrixXd Tracker::filterGetBaseMeasurementNoise() const {
-        if (use_aimm_ && aimm_) return aimm_->getBaseMeasurementNoise();
-        if (!use_aimm_ && ukf_) return ukf_->getBaseMeasurementNoise();
-        return Eigen::MatrixXd::Identity(3,3); 
-    }
-
-    void Tracker::filterSetMeasurementNoise(const Eigen::MatrixXd& R) {
+    void Tracker::filterSetMeasurementNoise(const Eigen::MatrixXd& R) 
+    {
         if (use_aimm_) { if (aimm_) aimm_->setMeasurementNoise(R); }
         else { if (ukf_) ukf_->setMeasurementNoise(R); }
     }
@@ -797,7 +655,7 @@ namespace rm_radarplugin
         (void)z_init;
         (void)dt;
         if (has_data) {
-            detect_fail_count_ = 0;  // Reset continuous failure count
+            detect_fail_count_ = 0;
 
             if (is_lidar_msg && !is_cam_msg) {
                 lidar_detected_count_++;
@@ -821,7 +679,10 @@ namespace rm_radarplugin
                 lidar_detected_count_ = 0;
                 cam_lost_counter_ = 0;
                 lidar_lost_counter_ = 0;
-                ROS_WARN("[Tracker] STATE: DETECTING -> TRACKING");
+                if(state_log_mode_)
+                {
+                    ROS_WARN("[Tracker] STATE: DETECTING -> TRACKING");
+                }
             }
         } 
         else 
@@ -831,7 +692,10 @@ namespace rm_radarplugin
                 track_state_ = rm_track::LOST;
                 detect_fail_count_ = 0;
                 q_track_valid_ = false;
-                ROS_WARN("[Tracker] STATE: DETECTING -> LOST");
+                if(state_log_mode_)
+                {
+                    ROS_WARN("[Tracker] STATE: DETECTING -> LOST");
+                }
             }
         }
     }
@@ -842,7 +706,8 @@ namespace rm_radarplugin
         (void)dt;
         if (has_data) {
             lost_count_ = 0;
-            if (is_lidar_msg && !is_cam_msg) {
+            if (is_lidar_msg && !is_cam_msg) 
+            {
                 tracking_with_cam_ = false;
                 lidar_lost_counter_ = 0;
             } else {
@@ -855,7 +720,8 @@ namespace rm_radarplugin
         else 
         {
             track_state_ = rm_track::TEMP_LOST;
-            if (tracking_with_cam_) {
+            if (tracking_with_cam_) 
+            {
                 cam_lost_counter_ = 1;
                 lost_count_ = cam_lost_counter_;
             } else {
@@ -863,7 +729,10 @@ namespace rm_radarplugin
                 lost_count_ = lidar_lost_counter_;
             }
             is_tracking_ = false;
-            ROS_WARN("[Tracker] STATE: TRACKING -> TEMP_LOST");
+            if(state_log_mode_)
+            {
+                ROS_WARN("[Tracker] STATE: TRACKING -> TEMP_LOST");
+            }
         }
     }
 
@@ -875,7 +744,8 @@ namespace rm_radarplugin
         {
             track_state_ = rm_track::TRACKING;
             is_tracking_ = true; 
-            if (is_lidar_msg && !is_cam_msg) {
+            if (is_lidar_msg && !is_cam_msg) 
+            {
                 tracking_with_cam_ = false;
                 lidar_lost_counter_ = 0;
             } else {
@@ -884,7 +754,10 @@ namespace rm_radarplugin
             }
             lost_count_ = 0;
             filterUpdate(z_meas);
-            ROS_WARN("[Tracker] STATE: TEMP_LOST -> TRACKING");
+            if(state_log_mode_)
+            {
+                ROS_WARN("[Tracker] STATE: TEMP_LOST -> TRACKING");
+            }
         } 
         else 
         {
@@ -903,9 +776,11 @@ namespace rm_radarplugin
                 q_track_valid_ = false; 
                 cam_lost_counter_ = 0;
                 lidar_lost_counter_ = 0;
-                ROS_WARN("[Tracker] STATE: TEMP_LOST -> LOST");
+                if(state_log_mode_)
+                {
+                    ROS_WARN("[Tracker] STATE: TEMP_LOST -> LOST");
+                }
                 
-                // When entering LOST state, ensure we have the last known position
                 if (filterIsInitialized()) {
                     Eigen::VectorXd state = filterGetState();
                     if (state.size() >= 6) {
@@ -941,14 +816,22 @@ namespace rm_radarplugin
 
             if (use_aimm_ && aimm_) {
                 aimm_->initialize(z_init);
-                ROS_WARN("[Tracker] STATE: LOST -> DETECTING (AIMM)");
+                if(state_log_mode_)
+                {
+                    ROS_WARN("[Tracker] STATE: LOST -> DETECTING (AIMM)");
+                }
             } else if (!use_aimm_ && ukf_) {
-                // 在初始化前检查UKF及其模型是否有效
                 if (ukf_ && ukf_->getModel()) {
                     ukf_->initialize(z_init);
+                    if(state_log_mode_)
+                    {
                         ROS_WARN("[Tracker] STATE: LOST -> DETECTING (UKF)");
+                    }
                 } else {
-                    ROS_ERROR("[Tracker] Cannot initialize UKF: ukf or model is null");
+                    if(state_log_mode_)
+                    {
+                        ROS_ERROR("[Tracker] Cannot initialize UKF: ukf or model is null");
+                    }
                 }
             }
         }
@@ -958,7 +841,6 @@ namespace rm_radarplugin
     {
         if(track_state_ != rm_track::LOST && (dt < 0.0001 || dt > 1.0)) return;
 
-        // Predict continuously while tracking lifecycle is active, even without measurements.
         if (track_state_ != rm_track::LOST && filterIsInitialized()) {
             filterSetDt(dt);
             filterPredict();
@@ -980,7 +862,6 @@ namespace rm_radarplugin
                 has_data ? "YES" : "NO", cam_detected_count_, lidar_detected_count_, cam_lost_counter_, lidar_lost_counter_);
         }
 
-        // Always publish tracker data regardless of state to let image processor know the current status
         publishTrackerData();
     }
 
@@ -1006,7 +887,6 @@ namespace rm_radarplugin
 
         track_data_msg.tracking = is_tracking_;
 
-        // Even if filter is not initialized, still publish the tracking status
         if(filterIsInitialized()) {
             Eigen::VectorXd state = filterGetState();
 
@@ -1018,12 +898,10 @@ namespace rm_radarplugin
                 track_data_msg.velocity.y = state(4);
                 track_data_msg.velocity.z = state(5);
                 
-                // Update last known position and velocity when we have valid data
                 last_known_position_ << state(0), state(1), state(2);
                 last_known_velocity_ << state(3), state(4), state(5);
             }
         } else {
-            // Use last known position and velocity when filter is not initialized
             track_data_msg.position.x = last_known_position_(0);
             track_data_msg.position.y = last_known_position_(1);
             track_data_msg.position.z = last_known_position_(2);
@@ -1034,7 +912,8 @@ namespace rm_radarplugin
         
         tracker_pub_.publish(track_data_msg);
 
-        if (q_track_valid_) {
+        if (q_track_valid_) 
+        {
             geometry_msgs::TransformStamped track_tf;
             track_tf.header.stamp = current_time_;
             track_tf.header.frame_id = target_frame_;

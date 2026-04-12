@@ -1,29 +1,24 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(rm_track)
+project(rm_radar_pose_solver)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
-add_compile_options(-std=c++14)
+
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  cv_bridge
+  dynamic_reconfigure
   geometry_msgs
-  rm_radar_msgs
+  nodelet
   rm_msgs
+  rm_radar_msgs
   roscpp
-  std_msgs
+  sensor_msgs
   tf2_geometry_msgs
   tf2_ros
-  nodelet
-  dynamic_reconfigure
-  cv_bridge
-  image_transport
-  sensor_msgs
 )
-
-find_package(OpenCV REQUIRED)
-find_package(Eigen3 REQUIRED)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -82,7 +77,7 @@ find_package(Eigen3 REQUIRED)
 ## Generate added messages and services with any dependencies listed here
 # generate_messages(
 #   DEPENDENCIES
-#   geometry_msgs#   rm_radar_msgs#   std_msgs#   tf2_geometry_msgs
+#   geometry_msgs#   rm_msgs#   rm_radar_msgs#   sensor_msgs#   tf2_geometry_msgs
 # )
 
 ################################################
@@ -101,13 +96,7 @@ find_package(Eigen3 REQUIRED)
 
 ## Generate dynamic reconfigure parameters in the 'cfg' folder
 generate_dynamic_reconfigure_options(
-        cfg/track.cfg
-        cfg/ukf.cfg
-        cfg/aimm.cfg
-        cfg/cv.cfg
-        cfg/ca.cfg
-        cfg/ctrv.cfg
-        cfg/singer.cfg
+  cfg/pose_solver.cfg
 )
 
 ###################################
@@ -121,8 +110,9 @@ generate_dynamic_reconfigure_options(
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES rm_track
-  CATKIN_DEPENDS geometry_msgs rm_radar_msgs roscpp std_msgs tf2_geometry_msgs tf2_ros nodelet dynamic_reconfigure
+  LIBRARIES rm_pose_solver
+  CATKIN_DEPENDS cv_bridge dynamic_reconfigure geometry_msgs rm_msgs rm_radar_msgs roscpp sensor_msgs tf2_geometry_msgs tf2_ros
+  DEPENDS system_lib
 )
 
 ###########
@@ -134,30 +124,25 @@ catkin_package(
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
+  ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIR}
 )
 
 ## Declare a C++ library
 add_library(${PROJECT_NAME}
-  src/rm_track.cpp
-  src/ukf.cpp
-  src/aimm.cpp
-  src/motion_models_define.cpp
+  src/pose_solver.cpp
 )
-
-# Ensure dynamic_reconfigure generates headers before compiling this library
-add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_gencfg ${catkin_EXPORTED_TARGETS})
 
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
 ## either from message generation or dynamic reconfigure
-# add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
-# add_executable(${PROJECT_NAME}_node src/rm_track_node.cpp)
+# add_executable(${PROJECT_NAME}_node src/rm_pose_solver_node.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -170,13 +155,11 @@ add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_gencfg ${catkin_EXPORTED_TARGET
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
-target_link_libraries(
-        ${PROJECT_NAME}
-        ${catkin_LIBRARIES}
-        ${OpenCV_LIBRARIES}
-        ${InferenceEngine_LIBRARIES}
-        ${ngraph_LIBRARIES}
+target_link_libraries(${PROJECT_NAME}
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )
+
 #############
 ## Install ##
 #############
@@ -224,7 +207,7 @@ target_link_libraries(
 #############
 
 ## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_rm_track.cpp)
+# catkin_add_gtest(${PROJECT_NAME}-test test/test_rm_pose_solver.cpp)
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()

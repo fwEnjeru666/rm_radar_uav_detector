@@ -4,10 +4,12 @@ hit_threshold: 3          # 连续检测命中多少帧后进入 TRACKING 稳定
 max_lost_count: 5         # 连续丢失多少帧后进入 LOST 完全丢失状态
 
 use_lidar_fusion: true    # 是否启用雷达点云辅助融合
-lidar_timeout: 0.5        # 雷达数据最大超时时间 (秒)
+lidar_timeout: 100.0        # 雷达数据最大超时时间 (秒)
 vision_timeout: 0.3       # 视觉数据最大超时时间 (秒)
-pixel_noise_u: 4.0        # 像素观测 u 方向标准差 (px)
-pixel_noise_v: 4.0        # 像素观测 v 方向标准差 (px)
+tele_cam_pixel_noise_u: 4.0        # 像素观测 u 方向标准差 (px)
+tele_cam_pixel_noise_v: 4.0        # 像素观测 v 方向标准差 (px)
+wide_cam_pixel_noise_u: 4.0        # 广角像素观测 u 方向标准差 (px)
+wide_cam_pixel_noise_v: 4.0        # 广角像素观测 v 方向标准差 (px)
 force_3d_measurement: true # 强制使用3D位姿量测（禁用8D角点量测）
 enable_pixel_gating: false # 是否启用像素观测门控
 enable_3d_fallback: false  # 8D不可用/门控失败时是否降级到3D；false=严格8D
