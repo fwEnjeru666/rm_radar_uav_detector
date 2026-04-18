@@ -204,6 +204,11 @@ namespace rm_radarplugin
     void Processor::drawArmorsVertexes(cv::Mat& image, std::vector<Armor>& armors)
     {
     cv::Scalar vertex_color = cv::Scalar(0, 255, 0);
+    int cross_size = 15;
+    cv::line(image, cv::Point(image_center_.x - cross_size, image_center_.y), 
+                    cv::Point(image_center_.x + cross_size, image_center_.y), cv::Scalar(0, 0, 255), 2);
+    cv::line(image, cv::Point(image_center_.x, image_center_.y - cross_size), 
+                    cv::Point(image_center_.x, image_center_.y + cross_size), cv::Scalar(0, 0, 255), 2);
     for (const auto& armor : armors)
     {
         for (int i = 0; i < 4; i++)
@@ -216,6 +221,8 @@ namespace rm_radarplugin
 
         line(image, armor.bars_4points_[0], armor.bars_4points_[1], cv::Scalar(0, 255, 0), 2, 8, 0);
         line(image, armor.bars_4points_[2], armor.bars_4points_[3], cv::Scalar(0, 255, 0), 2, 8, 0);
+        line(image, armor.center_, image_center_, cv::Scalar(255, 0, 0), 2, 8, 0);
+
     }
     }
 
@@ -703,7 +710,7 @@ namespace rm_radarplugin
 
         for(auto& armor : armors_)
         {
-            double distance2ImgCenter = sqrt((armor.center_.x - image_x_center_) * (armor.center_.x - image_x_center_) + (armor.center_.y - image_y_center_) * (armor.center_.y - image_y_center_));
+            double distance2ImgCenter = sqrt((armor.center_.x - image_center_.x) * (armor.center_.x - image_center_.x) + (armor.center_.y - image_center_.y) * (armor.center_.y - image_center_.y));
 
             rm_radar_msgs::DroneDetection target;
             target.header = target_array_.header; 
@@ -714,12 +721,17 @@ namespace rm_radarplugin
 
             for(size_t i=0; i<4; i++)
             {
-                target.armor_points[i].x = static_cast<int32_t>(armor.bars_4points_[i].x);
-                target.armor_points[i].y = static_cast<int32_t>(armor.bars_4points_[i].y);
+                target.armor_points[i].x = armor.bars_4points_[i].x;
+                target.armor_points[i].y = armor.bars_4points_[i].y;
             }
             
-            target.img_centroid_x = static_cast<uint32_t>(armor.center_.x);
-            target.img_centroid_y = static_cast<uint32_t>(armor.center_.y);
+            target.target_centroid_x = static_cast<uint32_t>(armor.center_.x);
+            target.target_centroid_y = static_cast<uint32_t>(armor.center_.y);
+            target.error_x = image_center_.x - armor.center_.x;
+            target.error_y = image_center_.y - armor.center_.y;
+            target.error_angle_yaw   = std::atan(target.error_x / fx_);
+            target.error_angle_pitch = std::atan(target.error_y / fy_);
+            
             target_array_.detections.push_back(target);
 
             if (!has_best_target || target.confidence > best_target.confidence)
@@ -731,6 +743,7 @@ namespace rm_radarplugin
 
         if (has_best_target)
         {
+
             target_pub_single_.publish(best_target);
         }
         

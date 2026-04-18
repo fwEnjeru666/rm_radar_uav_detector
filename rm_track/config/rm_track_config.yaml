@@ -4,7 +4,7 @@ hit_threshold: 3          # 连续检测命中多少帧后进入 TRACKING 稳定
 max_lost_count: 5         # 连续丢失多少帧后进入 LOST 完全丢失状态
 
 use_lidar_fusion: true    # 是否启用雷达点云辅助融合
-lidar_timeout: 100.0        # 雷达数据最大超时时间 (秒)
+lidar_timeout: 1.0        # 雷达数据最大超时时间 (秒)
 vision_timeout: 0.3       # 视觉数据最大超时时间 (秒)
 tele_cam_pixel_noise_u: 4.0        # 像素观测 u 方向标准差 (px)
 tele_cam_pixel_noise_v: 4.0        # 像素观测 v 方向标准差 (px)

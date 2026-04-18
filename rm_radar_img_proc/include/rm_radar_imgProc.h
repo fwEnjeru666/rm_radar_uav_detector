@@ -393,6 +393,12 @@ namespace rm_radarplugin
         cv::Mat intrinsics_;
         cv::Mat dist_coeffs_;
         sensor_msgs::CameraInfoConstPtr camera_info_;
+        double fx_ ;
+        double fy_ ;
+        double cx_ ; // 真实的图像中心 x
+        double cy_ ; // 真实的图像中心 
+        cv::Point2d image_center_; // 计算得到的图像中心
+
         void cam_callback(const sensor_msgs::ImageConstPtr& img, const sensor_msgs::CameraInfoConstPtr& info)
         {
             camera_info_ = info;
@@ -402,6 +408,11 @@ namespace rm_radarplugin
                 intrinsics_ = cv::Mat(3, 3, CV_64F, (void*)info->K.data()).clone();
                 dist_coeffs_ = cv::Mat(info->D).clone();
                 camera_model_initialized_ = true;
+                fx_ = intrinsics_.at<double>(0, 0);
+                fy_ = intrinsics_.at<double>(1, 1);
+                cx_ = intrinsics_.at<double>(0, 2);
+                cy_ = intrinsics_.at<double>(1, 2);
+                image_center_ = cv::Point2d(cx_, cy_);
             }
             boost::shared_ptr<cv_bridge::CvImage> temp =
                 boost::const_pointer_cast<cv_bridge::CvImage>(cv_bridge::toCvShare(img, "bgr8"));
@@ -410,6 +421,9 @@ namespace rm_radarplugin
             draw();
             // Note: target_array_ is already published inside findArmor(), no need to publish again
         }
+
+
+
         // HSV
         int red_h_min_low_{};
         int red_h_max_low_{};

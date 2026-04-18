@@ -8,6 +8,7 @@
 #include <rm_radar_msgs/DroneDetection.h>
 #include <rm_radar_msgs/DroneTrackData.h>
 #include <rm_msgs/TrackData.h>
+#include <rm_msgs/GimbalCmd.h>
 #include <thread>
 #include <mutex>
 #include <array>
@@ -65,6 +66,7 @@ namespace rm_radarplugin
         ros::Subscriber lidar_detection_sub_;  // 订阅 LiDAR 检测
 
         ros::Publisher tracker_pub_;
+        ros::Publisher img_tracker_pub_;
 
         ros::CallbackQueue my_queue_;
 
@@ -111,7 +113,7 @@ namespace rm_radarplugin
                           double& rmse_gate) const;
 
         //pub
-        rm_msgs::TrackData track_data_msg_;
+        // rm_msgs::GimbalCmd track_data_msg_;
 
         //transform
 

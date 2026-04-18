@@ -25,6 +25,7 @@ namespace rm_radarplugin
     {
         if (loaded_models_.empty())
         {
+            ROS_WARN("[Tracker] No pure UKF models loaded. Falling back to model index 0.");
             return 0;
         }
 
@@ -194,7 +195,8 @@ namespace rm_radarplugin
         wide_cam_info_sub_ = nh_.subscribe("/wide_camera/camera_info", 1, &Tracker::camInfoCB, this);
         wide_detection_sub_ = nh_.subscribe("/wide_camera/detection", 10, &Tracker::wideDetectionCB, this);
         lidar_detection_sub_ = nh_.subscribe("/lidar_detector/lidar_detection", 1, &Tracker::lidarDetectionCB, this);
-        tracker_pub_ = nh_.advertise<rm_msgs::TrackData>("/tracker/track_data", 1);
+        tracker_pub_ = nh_.advertise<rm_msgs::GimbalCmd>("/tracker/track_data", 1);
+        img_tracker_pub_ = nh_.advertise<rm_msgs::TrackData>("/tracker/img_track_data", 1);
         aimm_debug_pub_ = nh_.advertise<rm_radar_msgs::aimm_debugger>("/tracker/aimm_debug", 1);
 
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(ros::Duration(10));
@@ -551,11 +553,17 @@ namespace rm_radarplugin
             }
         }
         if (!has_data && use_lidar_fusion_ && msg_lidar && age_lidar < lidar_timeout_) {
-            Eigen::Vector3d p_odom(msg_lidar->pose.position.x, msg_lidar->pose.position.y, msg_lidar->pose.position.z);
-            active_frame_id = msg_lidar->header.frame_id;
-            
-            if (msg_lidar->header.frame_id == "odom" || msg_lidar->header.frame_id.empty()) {
-                z_meas = p_odom; z_init = p_odom; has_data = true; is_lidar_msg = true; current_time_ = msg_lidar->header.stamp;
+            Eigen::Vector3d p_lidar(msg_lidar->pose.position.x, msg_lidar->pose.position.y, msg_lidar->pose.position.z);
+            Eigen::Vector3d p_odom;
+            if (transform2Odom(msg_lidar->header, p_lidar, p_odom)) {
+                active_frame_id = msg_lidar->header.frame_id;
+                z_meas = p_odom; 
+                z_init = p_odom; 
+                has_data = true; 
+                is_lidar_msg = true; 
+                current_time_ = msg_lidar->header.stamp;
+            } else {
+                ROS_WARN_THROTTLE(1.0, "[Tracker] Failed to transform Lidar detection to odom!");
             }
         }
 
@@ -876,56 +884,68 @@ namespace rm_radarplugin
             aimm_debug_pub_.publish(aimm_msg);
         }
 
-        rm_msgs::TrackData track_data_msg;
-        track_data_msg.header.stamp = current_time_;
-        track_data_msg.header.frame_id = target_frame_;
+        rm_msgs::GimbalCmd track_data_msg;
+        track_data_msg.mode = 2;
+        track_data_msg.target_pos.header.stamp = current_time_;
+        track_data_msg.target_pos.header.frame_id = target_frame_;
 
-        track_data_msg.rotation.w = q_track_.getW();
-        track_data_msg.rotation.x = q_track_.getX();
-        track_data_msg.rotation.y = q_track_.getY();
-        track_data_msg.rotation.z = q_track_.getZ();
+        rm_msgs::TrackData img_track_data_msg;
+        img_track_data_msg.header.stamp = current_time_;
+        img_track_data_msg.header.frame_id = target_frame_;
 
-        track_data_msg.tracking = is_tracking_;
+        img_track_data_msg.rotation.w = q_track_.getW();
+        img_track_data_msg.rotation.x = q_track_.getX();
+        img_track_data_msg.rotation.y = q_track_.getY();
+        img_track_data_msg.rotation.z = q_track_.getZ();
+        img_track_data_msg.tracking = is_tracking_;
 
         if(filterIsInitialized()) {
             Eigen::VectorXd state = filterGetState();
 
             if(state.size() >= 6) {
-                track_data_msg.position.x = state(0);
-                track_data_msg.position.y = state(1);
-                track_data_msg.position.z = state(2);
-                track_data_msg.velocity.x = state(3);
-                track_data_msg.velocity.y = state(4);
-                track_data_msg.velocity.z = state(5);
+                track_data_msg.target_pos.point.x = state(0);
+                track_data_msg.target_pos.point.y = state(1);
+                track_data_msg.target_pos.point.z = state(2);
+
+                img_track_data_msg.position.x = state(0);
+                img_track_data_msg.position.y = state(1);
+                img_track_data_msg.position.z = state(2);
+                img_track_data_msg.velocity.x = state(3);
+                img_track_data_msg.velocity.y = state(4);
+                img_track_data_msg.velocity.z = state(5);
                 
                 last_known_position_ << state(0), state(1), state(2);
                 last_known_velocity_ << state(3), state(4), state(5);
             }
         } else {
-            track_data_msg.position.x = last_known_position_(0);
-            track_data_msg.position.y = last_known_position_(1);
-            track_data_msg.position.z = last_known_position_(2);
-            track_data_msg.velocity.x = last_known_velocity_(0);
-            track_data_msg.velocity.y = last_known_velocity_(1);
-            track_data_msg.velocity.z = last_known_velocity_(2);
+            track_data_msg.target_pos.point.x = last_known_position_(0);
+            track_data_msg.target_pos.point.y = last_known_position_(1);
+            track_data_msg.target_pos.point.z = last_known_position_(2);
+
+            img_track_data_msg.position.x = last_known_position_(0);
+            img_track_data_msg.position.y = last_known_position_(1);
+            img_track_data_msg.position.z = last_known_position_(2);
+            img_track_data_msg.velocity.x = last_known_velocity_(0);
+            img_track_data_msg.velocity.y = last_known_velocity_(1);
+            img_track_data_msg.velocity.z = last_known_velocity_(2);
         }
         
         tracker_pub_.publish(track_data_msg);
-
+        img_tracker_pub_.publish(img_track_data_msg);
         if (q_track_valid_) 
         {
             geometry_msgs::TransformStamped track_tf;
             track_tf.header.stamp = current_time_;
             track_tf.header.frame_id = target_frame_;
             track_tf.child_frame_id = "tracked_target_" ;
-            track_tf.transform.translation.x = track_data_msg.position.x;
-            track_tf.transform.translation.y = track_data_msg.position.y;
-            track_tf.transform.translation.z = track_data_msg.position.z;
-            track_tf.transform.rotation.w = track_data_msg.rotation.w;
-            track_tf.transform.rotation.x = track_data_msg.rotation.x;
-            track_tf.transform.rotation.y = track_data_msg.rotation.y;
-            track_tf.transform.rotation.z = track_data_msg.rotation.z;
-            tf_broadcaster_->sendTransform(track_tf);
+            track_tf.transform.translation.x = track_data_msg.target_pos.point.x;
+            track_tf.transform.translation.y = track_data_msg.target_pos.point.y;
+            track_tf.transform.translation.z = track_data_msg.target_pos.point.z;
+            track_tf.transform.rotation.w = q_track_.getW();
+            track_tf.transform.rotation.x = q_track_.getX();
+            track_tf.transform.rotation.y = q_track_.getY();
+            track_tf.transform.rotation.z = q_track_.getZ();
+            tf_broadcaster_->sendTransform(track_tf);   
         }
     }
 }

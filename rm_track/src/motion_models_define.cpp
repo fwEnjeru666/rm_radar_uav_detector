@@ -759,7 +759,7 @@ namespace rm_radarplugin
             model->setName(name);
             return model;
         }
-        //如果读取了未知type ，assert
+
         ROS_FATAL_STREAM("[" << model_nh_.getNamespace() << "] Unknown model type: " << type);
 
         return nullptr;
