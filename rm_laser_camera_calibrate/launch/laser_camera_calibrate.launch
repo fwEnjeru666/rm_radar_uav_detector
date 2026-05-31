@@ -1,0 +1,49 @@
+<launch>
+  <arg name="node_name" default="laser_camera_calibrate"/>
+  <arg name="params_file" default="$(find rm_laser_camera_calibrate)/config/laser_camera_calibrate.yaml"/>
+  <arg name="enable_calib" default="true"/>
+  <arg name="enable_sampling" default="false"/>
+
+  <!-- IO topics for calibrator node -->
+  <arg name="sample_topic" default="/right_camera_Processor/processor/laser_calib_extract"/>
+  <arg name="manual_bias_topic" default="/laser_camera_calibrate/manual_bias"/>
+  <arg name="status_topic" default="/laser_camera_calibrate/status"/>
+
+  <!-- Optional keyboard bias tool -->
+  <arg name="enable_bias_controller" default="true"/>
+  <arg name="bias_topic" default="/laser_camera_calibrate/bias"/>
+  <arg name="init_bias_x" default="0.0"/>
+  <arg name="init_bias_y" default="0.0"/>
+  <arg name="step_x" default="1.0"/>
+  <arg name="step_y" default="1.0"/>
+  <arg name="step_scale" default="2.0"/>
+  <arg name="step_min" default="0.01"/>
+  <arg name="step_max" default="100.0"/>
+  <arg name="poll_hz" default="50.0"/>
+
+  <node pkg="rm_laser_camera_calibrate"
+        type="laser_camera_calibrate_node"
+        name="$(arg node_name)"
+        output="screen">
+    <rosparam command="load" file="$(arg params_file)"/>
+    <param name="laser_camera_calibrate/enable" value="$(arg enable_calib)"/>
+    <param name="laser_camera_calibrate/enable_sampling" value="$(arg enable_sampling)"/>
+    <param name="laser_camera_calibrate/sample_topic" value="$(arg sample_topic)"/>
+    <param name="laser_camera_calibrate/manual_bias_topic" value="$(arg manual_bias_topic)"/>
+    <param name="laser_camera_calibrate/status_topic" value="$(arg status_topic)"/>
+  </node>
+
+  <include file="$(find rm_laser_camera_calibrate)/launch/bias_controller.launch"
+           if="$(arg enable_bias_controller)">
+    <arg name="bias_topic" value="$(arg bias_topic)"/>
+    <arg name="manual_bias_topic" value="$(arg manual_bias_topic)"/>
+    <arg name="init_bias_x" value="$(arg init_bias_x)"/>
+    <arg name="init_bias_y" value="$(arg init_bias_y)"/>
+    <arg name="step_x" value="$(arg step_x)"/>
+    <arg name="step_y" value="$(arg step_y)"/>
+    <arg name="step_scale" value="$(arg step_scale)"/>
+    <arg name="step_min" value="$(arg step_min)"/>
+    <arg name="step_max" value="$(arg step_max)"/>
+    <arg name="poll_hz" value="$(arg poll_hz)"/>
+  </include>
+</launch>

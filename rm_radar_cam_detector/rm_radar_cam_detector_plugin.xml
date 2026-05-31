@@ -1,0 +1,5 @@
+<library path="lib/librm_radar_cam_detector">
+  <class name="rm_radar_cam_detector/CamDetector" type="rm_radarplugin::CamDetector" base_class_type="nodelet::Nodelet">
+    <description>Project tracked radar AABB onto camera image</description>
+  </class>
+</library>

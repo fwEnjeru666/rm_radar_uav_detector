@@ -52,6 +52,13 @@ enum MorphType
   DISABLE = 8
 };
 
+enum MorphKernelShape
+{
+  ELLIPSE = 0,
+  RECT = 1,
+  LINE = 2
+};
+
 enum CamType
 {
   Tele_cam = 0,

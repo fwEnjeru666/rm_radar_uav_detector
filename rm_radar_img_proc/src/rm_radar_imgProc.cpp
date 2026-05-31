@@ -1,5 +1,7 @@
 #include <rm_radar_imgProc.h>
+#include <algorithm>
 #include <iomanip>
+#include <sstream>
 
 PLUGINLIB_EXPORT_CLASS(rm_radarplugin::Processor, nodelet::Nodelet);
 
@@ -20,78 +22,194 @@ namespace rm_radarplugin
     void Processor::initialize(ros::NodeHandle &nh)
     {
         nh_ = ros::NodeHandle(nh, "radar_imgProc");
+        ros::NodeHandle armor_nh(nh_, "armor_condition");
+        ros::NodeHandle preprocess_nh(nh_, "preprocess_condition");
+        ros::NodeHandle draw_nh(nh_, "draw_condition");
         ROS_INFO("radar image process initialized");
 
-        auto armor_params_init = [this, &nh]() {
+        {
+            const auto& armor_cfg_default = rm_radar_img_proc::ArmorConfig::__getDefault__();
+            is_bar_debug_ = armor_cfg_default.is_bar_debug;
+            is_armor_debug_ = armor_cfg_default.is_armor_debug;
+            select_bar_ = armor_cfg_default.select_bar;
+            max_angle_diff_ = armor_cfg_default.max_angle_diff;
+            min_lw_ratio_ = armor_cfg_default.min_lw_ratio;
+            max_lw_ratio_ = armor_cfg_default.max_lw_ratio;
+            min_pixel_contained_ratio_ = armor_cfg_default.min_pixel_contained_ratio;
+            max_bars_ratio_ = armor_cfg_default.max_bars_ratio;
+            min_bars_distance_ = armor_cfg_default.min_bars_distance;
+            max_bars_distance_ = armor_cfg_default.max_bars_distance;
+            max_bars_angle_ = armor_cfg_default.max_bars_angle;
+            max_bars_x_dis_ = armor_cfg_default.max_bars_x_dis;
+            select_by_last_ = armor_cfg_default.select_by_last;
+
+            const auto& preprocess_cfg_default = rm_radar_img_proc::PreprocessConfig::__getDefault__();
+            target_is_red_ = preprocess_cfg_default.target_color;
+            preprocess_method_ = preprocess_cfg_default.preprocess_method;
+            red_h_min_low_ = preprocess_cfg_default.red_h_min_low;
+            red_h_max_low_ = preprocess_cfg_default.red_h_max_low;
+            red_h_min_high_ = preprocess_cfg_default.red_h_min_high;
+            red_h_max_high_ = preprocess_cfg_default.red_h_max_high;
+            red_s_min_ = preprocess_cfg_default.red_s_min;
+            red_s_max_ = preprocess_cfg_default.red_s_max;
+            red_v_min_ = preprocess_cfg_default.red_v_min;
+            red_v_max_ = preprocess_cfg_default.red_v_max;
+            blue_h_min_ = preprocess_cfg_default.blue_h_min;
+            blue_h_max_ = preprocess_cfg_default.blue_h_max;
+            blue_s_min_ = preprocess_cfg_default.blue_s_min;
+            blue_s_max_ = preprocess_cfg_default.blue_s_max;
+            blue_v_min_ = preprocess_cfg_default.blue_v_min;
+            blue_v_max_ = preprocess_cfg_default.blue_v_max;
+            binary_thresh_ = preprocess_cfg_default.binary_thresh;
+            morph_type_ = preprocess_cfg_default.morph_type;
+            binary_element_ = preprocess_cfg_default.binary_element;
+            kernel_shape_ = preprocess_cfg_default.kernel_shape;
+            kernel_w_ = preprocess_cfg_default.kernel_w;
+            kernel_h_ = preprocess_cfg_default.kernel_h;
+            kernel_angle_deg_ = preprocess_cfg_default.kernel_angle_deg;
+            morph_iterations_ = preprocess_cfg_default.morph_iterations;
+
+            const auto& draw_cfg_default = rm_radar_img_proc::DrawConfig::__getDefault__();
+            draw_type_ = static_cast<DrawImage>(draw_cfg_default.draw_type);
+            line_width_ = draw_cfg_default.line_width;
+            show_fps_ = draw_cfg_default.show_fps;
+            show_centroid_only_ = draw_cfg_default.show_centroid_only;
+        }
+
+        auto armor_params_init = [this, &armor_nh]() {
             ROS_INFO("reading armor param");
-            //    bar_br_thresh_ = nh.param("bar_br_thresh", decltype(bar_br_thresh_){});
-            top_light_y_ = nh.param("top_light_y", decltype(top_light_y_){});
-            roi_width_ = nh.param("roi_width", decltype(roi_width_){});
-            roi_height_ = nh.param("roi_height", decltype(roi_height_){});
+            armor_nh.getParam("is_bar_debug", is_bar_debug_);
+            armor_nh.getParam("is_armor_debug", is_armor_debug_);
+            armor_nh.getParam("select_bar", select_bar_);
+            armor_nh.getParam("max_angle_diff", max_angle_diff_);
+            armor_nh.getParam("min_lw_ratio", min_lw_ratio_);
+            armor_nh.getParam("max_lw_ratio", max_lw_ratio_);
+            armor_nh.getParam("min_pixel_contained_ratio", min_pixel_contained_ratio_);
+            armor_nh.getParam("max_bars_ratio", max_bars_ratio_);
+            armor_nh.getParam("max_bars_distance", max_bars_distance_);
+            armor_nh.getParam("min_bars_distance", min_bars_distance_);
+            armor_nh.getParam("max_bars_angle", max_bars_angle_);
+            armor_nh.getParam("max_bars_x_dis", max_bars_x_dis_);
+            armor_nh.getParam("select_by_last", select_by_last_);
 
-            is_bar_debug_ = nh.param("is_bar_debug", decltype(is_bar_debug_){});
-            is_armor_debug_ = nh.param("is_armor_debug", decltype(is_armor_debug_){});
-            select_bar_ = nh.param("select_bar", decltype(select_bar_){});
-            max_angle_diff_ = nh.param("max_angle_diff", decltype(max_angle_diff_){});
-            min_lw_ratio_ = nh.param("min_lw_ratio", decltype(min_lw_ratio_){});
-            max_lw_ratio_ = nh.param("max_lw_ratio", decltype(max_lw_ratio_){});
-            min_pixel_contained_ratio_ = nh.param("min_pixel_contained_ratio", decltype(min_pixel_contained_ratio_){});
-            max_bars_ratio_ = nh.param("max_bars_ratio", decltype(max_bars_ratio_){});
-            max_bars_distance_ = nh.param("max_bars_distance", decltype(max_bars_distance_){});
-            min_bars_distance_ = nh.param("min_bars_distance", decltype(min_bars_distance_){});
-            max_bars_angle_ = nh.param("max_bars_angle", decltype(max_bars_angle_){});
-            max_bars_x_dis_ = nh.param("max_bars_x_dis", decltype(max_bars_x_dis_){});
-            select_by_last_ = nh.param("select_by_last", decltype(select_by_last_){});
-
-            expand_ratio_ = nh.param("expand_ratio", decltype(expand_ratio_){});
-
-            image_x_center_ = nh.param("image_x_center", decltype(image_x_center_){});
-            image_y_center_ = nh.param("image_y_center", decltype(image_y_center_){});
-
-            camera_coordinate_ = nh.param("camera_coordinate", decltype(camera_coordinate_){});
+            // static-only params under ~/radar_imgProc/*
+            nh_.getParam("top_light_y", top_light_y_);
+            nh_.getParam("roi_width", roi_width_);
+            nh_.getParam("roi_height", roi_height_);
+            nh_.getParam("expand_ratio", expand_ratio_);
+            nh_.getParam("image_x_center", image_x_center_);
+            nh_.getParam("image_y_center", image_y_center_);
+            nh_.getParam("camera_coordinate", camera_coordinate_);
             ROS_INFO("Armor params reading done");
         };
-        auto pre_process_params_init = [this, &nh]() {
+        auto pre_process_params_init = [this, &preprocess_nh]() {
             ROS_INFO("reading pre-process param");
-            target_is_red_ = nh.param("target_color", decltype(target_is_red_){});
-            preprocess_method_ = nh.param("preprocess_method", decltype(preprocess_method_){});
+            preprocess_nh.getParam("target_color", target_is_red_);
+            preprocess_nh.getParam("preprocess_method", preprocess_method_);
 
-            red_h_min_low_ = nh.param("red_h_min_low", decltype(red_h_min_low_){});
-            red_h_max_low_ = nh.param("red_h_max_low", decltype(red_h_max_low_){});
-            red_h_min_high_ = nh.param("red_h_min_high", decltype(red_h_min_high_){});
-            red_h_max_high_ = nh.param("red_h_max_high", decltype(red_h_max_high_){});
-            red_s_min_ = nh.param("red_s_min", decltype(red_s_min_){});
-            red_s_max_ = nh.param("red_s_max", decltype(red_s_max_){});
-            red_v_min_ = nh.param("red_v_min", decltype(red_v_min_){});
-            red_v_max_ = nh.param("red_v_max", decltype(red_v_max_){});
+            preprocess_nh.getParam("red_h_min_low", red_h_min_low_);
+            preprocess_nh.getParam("red_h_max_low", red_h_max_low_);
+            preprocess_nh.getParam("red_h_min_high", red_h_min_high_);
+            preprocess_nh.getParam("red_h_max_high", red_h_max_high_);
+            preprocess_nh.getParam("red_s_min", red_s_min_);
+            preprocess_nh.getParam("red_s_max", red_s_max_);
+            preprocess_nh.getParam("red_v_min", red_v_min_);
+            preprocess_nh.getParam("red_v_max", red_v_max_);
 
-            blue_h_min_ = nh.param("blue_h_min", decltype(blue_h_min_){});
-            blue_h_max_ = nh.param("blue_h_max", decltype(blue_h_max_){});
-            blue_s_min_ = nh.param("blue_s_min", decltype(blue_s_min_){});
-            blue_s_max_ = nh.param("blue_s_max", decltype(blue_s_max_){});
-            blue_v_min_ = nh.param("blue_v_min", decltype(blue_v_min_){});
-            blue_v_max_ = nh.param("blue_v_max", decltype(blue_v_max_){});
+            preprocess_nh.getParam("blue_h_min", blue_h_min_);
+            preprocess_nh.getParam("blue_h_max", blue_h_max_);
+            preprocess_nh.getParam("blue_s_min", blue_s_min_);
+            preprocess_nh.getParam("blue_s_max", blue_s_max_);
+            preprocess_nh.getParam("blue_v_min", blue_v_min_);
+            preprocess_nh.getParam("blue_v_max", blue_v_max_);
 
-            binary_thresh_ = nh.param("binary_thresh", decltype(binary_thresh_){});
-            morph_type_ = nh.param("morph_type", decltype(morph_type_){});
-            binary_element_ = nh.param("binary_element", decltype(binary_element_){});
+            preprocess_nh.getParam("binary_thresh", binary_thresh_);
+            preprocess_nh.getParam("morph_type", morph_type_);
+            preprocess_nh.getParam("binary_element", binary_element_);
+            preprocess_nh.getParam("kernel_shape", kernel_shape_);
+            preprocess_nh.getParam("kernel_w", kernel_w_);
+            preprocess_nh.getParam("kernel_h", kernel_h_);
+            preprocess_nh.getParam("kernel_angle_deg", kernel_angle_deg_);
+            preprocess_nh.getParam("morph_iterations", morph_iterations_);
+
+            binary_element_ = sanitizeKernelSize(binary_element_);
+            if (kernel_w_ > 0) kernel_w_ = sanitizeKernelSize(kernel_w_);
+            if (kernel_h_ > 0) kernel_h_ = sanitizeKernelSize(kernel_h_);
+            kernel_angle_deg_ = ((kernel_angle_deg_ % 180) + 180) % 180;
+            morph_iterations_ = std::max(1, morph_iterations_);
             ROS_INFO("pre-processing param reading done");
+        };
+        auto draw_params_init = [this, &draw_nh]() {
+            int draw_type_param = static_cast<int>(draw_type_);
+            draw_nh.getParam("draw_type", draw_type_param);
+            draw_type_ = static_cast<DrawImage>(draw_type_param);
+            draw_nh.getParam("line_width", line_width_);
+            draw_nh.getParam("show_fps", show_fps_);
+            draw_nh.getParam("show_centroid_only", show_centroid_only_);
         };
 
         armor_params_init();
         pre_process_params_init();
+        draw_params_init();
 
         armor_cfg_srv_ = std::make_unique<dynamic_reconfigure::Server<rm_radar_img_proc::ArmorConfig>>(ros::NodeHandle(nh_, "armor_condition"));
         armor_cfg_cb_ = boost::bind(&Processor::armorconfigCB, this, _1, _2);
         armor_cfg_srv_->setCallback(armor_cfg_cb_);
+        rm_radar_img_proc::ArmorConfig armor_cfg_init;
+        armor_cfg_init.is_bar_debug = is_bar_debug_;
+        armor_cfg_init.is_armor_debug = is_armor_debug_;
+        armor_cfg_init.select_bar = select_bar_;
+        armor_cfg_init.max_angle_diff = max_angle_diff_;
+        armor_cfg_init.min_lw_ratio = min_lw_ratio_;
+        armor_cfg_init.max_lw_ratio = max_lw_ratio_;
+        armor_cfg_init.min_pixel_contained_ratio = min_pixel_contained_ratio_;
+        armor_cfg_init.max_bars_ratio = max_bars_ratio_;
+        armor_cfg_init.min_bars_distance = min_bars_distance_;
+        armor_cfg_init.max_bars_distance = max_bars_distance_;
+        armor_cfg_init.max_bars_angle = max_bars_angle_;
+        armor_cfg_init.max_bars_x_dis = max_bars_x_dis_;
+        armor_cfg_init.select_by_last = select_by_last_;
+        armor_cfg_srv_->updateConfig(armor_cfg_init);
 
         preprocess_cfg_srv_ = std::make_unique<dynamic_reconfigure::Server<rm_radar_img_proc::PreprocessConfig>>(ros::NodeHandle(nh_, "preprocess_condition"));
         preprocess_cfg_cb_ = boost::bind(&Processor::preProcessconfigCB, this, _1, _2);
         preprocess_cfg_srv_->setCallback(preprocess_cfg_cb_);
+        rm_radar_img_proc::PreprocessConfig preprocess_cfg_init;
+        preprocess_cfg_init.target_color = target_is_red_;
+        preprocess_cfg_init.preprocess_method = preprocess_method_;
+        preprocess_cfg_init.red_h_min_low = red_h_min_low_;
+        preprocess_cfg_init.red_h_max_low = red_h_max_low_;
+        preprocess_cfg_init.red_h_min_high = red_h_min_high_;
+        preprocess_cfg_init.red_h_max_high = red_h_max_high_;
+        preprocess_cfg_init.red_s_min = red_s_min_;
+        preprocess_cfg_init.red_s_max = red_s_max_;
+        preprocess_cfg_init.red_v_min = red_v_min_;
+        preprocess_cfg_init.red_v_max = red_v_max_;
+        preprocess_cfg_init.blue_h_min = blue_h_min_;
+        preprocess_cfg_init.blue_h_max = blue_h_max_;
+        preprocess_cfg_init.blue_s_min = blue_s_min_;
+        preprocess_cfg_init.blue_s_max = blue_s_max_;
+        preprocess_cfg_init.blue_v_min = blue_v_min_;
+        preprocess_cfg_init.blue_v_max = blue_v_max_;
+        preprocess_cfg_init.binary_thresh = binary_thresh_;
+        preprocess_cfg_init.morph_type = morph_type_;
+        preprocess_cfg_init.binary_element = binary_element_;
+        preprocess_cfg_init.kernel_shape = kernel_shape_;
+        preprocess_cfg_init.kernel_w = kernel_w_;
+        preprocess_cfg_init.kernel_h = kernel_h_;
+        preprocess_cfg_init.kernel_angle_deg = kernel_angle_deg_;
+        preprocess_cfg_init.morph_iterations = morph_iterations_;
+        preprocess_cfg_srv_->updateConfig(preprocess_cfg_init);
 
         draw_cfg_srv_ = std::make_unique<dynamic_reconfigure::Server<rm_radar_img_proc::DrawConfig>>(ros::NodeHandle(nh_, "draw_condition"));
         draw_cfg_cb_ = boost::bind(&Processor::drawconfigCB, this, _1, _2);
         draw_cfg_srv_->setCallback(draw_cfg_cb_);
+        rm_radar_img_proc::DrawConfig draw_cfg_init;
+        draw_cfg_init.draw_type = static_cast<int>(draw_type_);
+        draw_cfg_init.line_width = line_width_;
+        draw_cfg_init.show_fps = show_fps_;
+        draw_cfg_init.show_centroid_only = show_centroid_only_;
+        draw_cfg_srv_->updateConfig(draw_cfg_init);
 
         it_ = std::make_shared<image_transport::ImageTransport>(nh_);
         image_pub_ = it_->advertise("debug_image", 1);
@@ -160,13 +278,23 @@ namespace rm_radarplugin
 
         morph_type_ = config.morph_type;
         binary_element_ = config.binary_element;
+        kernel_shape_ = config.kernel_shape;
+        kernel_w_ = config.kernel_w;
+        kernel_h_ = config.kernel_h;
+        kernel_angle_deg_ = config.kernel_angle_deg;
+        morph_iterations_ = config.morph_iterations;
 
         if (!pre_process_dynamic_reconfig_initialized_)
         {
             pre_process_dynamic_reconfig_initialized_ = true;
         }
 
-        if (binary_element_ % 2 == 0) binary_element_ += 1; 
+        binary_element_ = sanitizeKernelSize(binary_element_);
+        if (kernel_w_ > 0) kernel_w_ = sanitizeKernelSize(kernel_w_);
+        if (kernel_h_ > 0) kernel_h_ = sanitizeKernelSize(kernel_h_);
+        kernel_angle_deg_ = ((kernel_angle_deg_ % 180) + 180) % 180;
+        morph_iterations_ = std::max(1, morph_iterations_);
+        morph_kernel_dirty_ = true;
     }
 
 
@@ -176,6 +304,28 @@ namespace rm_radarplugin
         for (const auto& bar : bars)
             for (int j = 0; j < 4; j++)
             cv::line(image, bar.points_[j], bar.points_[(j + 1) % 4], line_color, line_width_);
+
+        if (is_bar_debug_)
+        {
+            for (const auto& bar : bars)
+            {
+                cv::Point origin(cvRound(bar.center_point_.x) + 10, cvRound(bar.center_point_.y) - 10);
+                origin.x = std::max(5, std::min(origin.x, std::max(5, image.cols - 700)));
+                origin.y = std::max(20, std::min(origin.y, std::max(20, image.rows - 10)));
+                std::ostringstream oss;
+                oss << std::fixed << std::setprecision(2)
+                    << "BAR ang=" << bar.angle_
+                    << " lw=" << bar.lw_ratio_
+                    << " pix=" << bar.pixel_contained_ratio_;
+                cv::putText(image,
+                            oss.str(),
+                            origin,
+                            cv::FONT_HERSHEY_SIMPLEX,
+                            0.55,
+                            cv::Scalar(0, 255, 255),
+                            2);
+            }
+        }
     }
 
     void Processor::drawArmors(cv::Mat& image, std::vector<Armor>& armors)
@@ -200,29 +350,79 @@ namespace rm_radarplugin
                 //             1.0, cv::Scalar(0, 255, 255), 2);
             }
         }
+
+        if (is_armor_debug_)
+        {
+            for (const auto& armor : armors)
+            {
+                double bar_ratio = 0.0;
+                double bars_dist = 0.0;
+                double bars_angle = 0.0;
+                double bars_x_dis = 0.0;
+                if (armor.bar_up_ != nullptr && armor.bar_bottom_ != nullptr)
+                {
+                    const double top_len = armor.bar_up_->length_len_;
+                    const double bottom_len = armor.bar_bottom_->length_len_;
+                    const double min_len = std::min(top_len, bottom_len);
+                    const double max_len = std::max(top_len, bottom_len);
+                    bar_ratio = (min_len > 1e-6) ? (max_len / min_len) : 0.0;
+
+                    const double dx = static_cast<double>(armor.bar_up_->center_point_.x - armor.bar_bottom_->center_point_.x);
+                    const double dy = static_cast<double>(armor.bar_up_->center_point_.y - armor.bar_bottom_->center_point_.y);
+                    bars_dist = std::sqrt(dx * dx + dy * dy);
+
+                    bars_angle = std::fabs(static_cast<double>(armor.bar_up_->angle_ - armor.bar_bottom_->angle_));
+                    if (bars_angle > 90.0) bars_angle = 180.0 - bars_angle;
+
+                    const double lens = top_len + bottom_len;
+                    bars_x_dis = (lens > 1e-6)
+                                 ? (std::fabs(dx) / (lens * 0.5))
+                                 : 0.0;
+                }
+
+                cv::Point origin(cvRound(armor.center_.x) + 12, cvRound(armor.center_.y) - 10);
+                origin.x = std::max(5, std::min(origin.x, std::max(5, image.cols - 900)));
+                origin.y = std::max(20, std::min(origin.y, std::max(20, image.rows - 10)));
+                std::ostringstream oss;
+                oss << std::fixed << std::setprecision(2)
+                    << "ARMOR ratio=" << bar_ratio
+                    << " dist=" << bars_dist
+                    << " ang=" << bars_angle
+                    << " xdis=" << bars_x_dis
+                    << " conf=" << armor.confidence_;
+                cv::putText(image,
+                            oss.str(),
+                            origin,
+                            cv::FONT_HERSHEY_SIMPLEX,
+                            0.55,
+                            cv::Scalar(255, 255, 0),
+                            2);
+            }
+        }
     }
     void Processor::drawArmorsVertexes(cv::Mat& image, std::vector<Armor>& armors)
     {
     cv::Scalar vertex_color = cv::Scalar(0, 255, 0);
     int cross_size = 15;
     cv::line(image, cv::Point(image_center_.x - cross_size, image_center_.y), 
-                    cv::Point(image_center_.x + cross_size, image_center_.y), cv::Scalar(0, 0, 255), 2);
+                    cv::Point(image_center_.x + cross_size, image_center_.y), cv::Scalar(0, 0, 255), line_width_);
     cv::line(image, cv::Point(image_center_.x, image_center_.y - cross_size), 
-                    cv::Point(image_center_.x, image_center_.y + cross_size), cv::Scalar(0, 0, 255), 2);
+                    cv::Point(image_center_.x, image_center_.y + cross_size), cv::Scalar(0, 0, 255), line_width_);
     for (const auto& armor : armors)
     {
-        for (int i = 0; i < 4; i++)
+        if(!show_centroid_only_)
         {
-        circle(image, armor.bars_4points_[i], 3, vertex_color, 2);
-        putText(image, std::to_string(i), armor.bars_4points_[i], cv::FONT_HERSHEY_COMPLEX, 1.5, vertex_color);
+            for (int i = 0; i < 4; i++)
+            {
+            circle(image, armor.bars_4points_[i], 3, vertex_color, line_width_);
+            putText(image, std::to_string(i), armor.bars_4points_[i], cv::FONT_HERSHEY_COMPLEX, 1.5, vertex_color);
+            }
+            line(image, armor.bars_4points_[0], armor.bars_4points_[1], cv::Scalar(0, 255, 0), line_width_);
+            line(image, armor.bars_4points_[2], armor.bars_4points_[3], cv::Scalar(0, 255, 0), line_width_);
+            putText(image, std::to_string(5), armor.center_, cv::FONT_HERSHEY_COMPLEX, 1.5, vertex_color);
         }
-        circle(image, armor.center_, 3, vertex_color, 2);
-        putText(image, std::to_string(5), armor.center_, cv::FONT_HERSHEY_COMPLEX, 1.5, vertex_color);
-
-        line(image, armor.bars_4points_[0], armor.bars_4points_[1], cv::Scalar(0, 255, 0), 2, 8, 0);
-        line(image, armor.bars_4points_[2], armor.bars_4points_[3], cv::Scalar(0, 255, 0), 2, 8, 0);
-        line(image, armor.center_, image_center_, cv::Scalar(255, 0, 0), 2, 8, 0);
-
+        circle(image, armor.center_, 3, vertex_color, line_width_);
+        line(image, armor.center_, image_center_, cv::Scalar(255, 0, 0), line_width_);
     }
     }
 
@@ -257,8 +457,11 @@ namespace rm_radarplugin
 
     void Processor::drawconfigCB(rm_radar_img_proc::DrawConfig& config, uint32_t level)
     {
-        draw_type_ = DrawImage(config.draw_type);
+        const int draw_type_clamped = std::max(static_cast<int>(DrawImage::DISABLE),
+                                               std::min(config.draw_type, static_cast<int>(DrawImage::TRACKER)));
+        draw_type_ = static_cast<DrawImage>(draw_type_clamped);
         line_width_ = config.line_width;
+        show_centroid_only_ = config.show_centroid_only;
 
         if (show_fps_ != config.show_fps)
         {
@@ -272,9 +475,13 @@ namespace rm_radarplugin
         }
     }
 
-
     void Processor::draw()
     {
+        if (draw_type_ == DrawImage::DISABLE)
+        {
+            return;
+        }
+
         cv::Mat draw_image;
         sensor_msgs::ImagePtr msg;
         switch (draw_type_)
@@ -299,6 +506,11 @@ namespace rm_radarplugin
                 case DrawImage::ARMORS_VERTEXS:
                     raw_image_.copyTo(draw_image);
                     drawArmorsVertexes(draw_image, armors_);
+                    break;
+                case DrawImage::BARS_ARMORS:
+                    raw_image_.copyTo(draw_image);
+                    drawArmors(draw_image, armors_);
+                    drawBars(draw_image, bars_);
                     break;
                 case DrawImage::TRACKER:
                     if (track_data_.tracking)
@@ -341,7 +553,6 @@ namespace rm_radarplugin
             cv::putText(draw_image, buf, cv::Point(10, 25), cv::FONT_HERSHEY_SIMPLEX,
                         0.7, cv::Scalar(0, 255, 255), 2);
         }
-
         if (!draw_image.empty())
         {
             const bool is_mono = (draw_type_ == DrawImage::BINARY);
@@ -352,9 +563,69 @@ namespace rm_radarplugin
             image_pub_.publish(msg);
         }
     }
+    int Processor::sanitizeKernelSize(int value)
+    {
+        const int clamped = std::max(1, value);
+        return (clamped % 2 == 0) ? (clamped + 1) : clamped;
+    }
+
+    cv::Mat Processor::buildMorphKernel()
+    {
+        int w = kernel_w_ > 0 ? kernel_w_ : binary_element_;
+        int h = kernel_h_ > 0 ? kernel_h_ : binary_element_;
+        w = sanitizeKernelSize(w);
+        h = sanitizeKernelSize(h);
+
+        const int shape = std::max(static_cast<int>(ELLIPSE), std::min(kernel_shape_, static_cast<int>(LINE)));
+        const int angle = ((kernel_angle_deg_ % 180) + 180) % 180;
+
+        const bool need_rebuild = morph_kernel_dirty_ ||
+                                  morph_kernel_cache_.empty() ||
+                                  shape != last_kernel_shape_ ||
+                                  w != last_kernel_w_ ||
+                                  h != last_kernel_h_ ||
+                                  angle != last_kernel_angle_deg_;
+        if (!need_rebuild)
+        {
+            return morph_kernel_cache_;
+        }
+
+        switch (shape)
+        {
+            case RECT:
+                morph_kernel_cache_ = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(w, h), cv::Point(-1, -1));
+                break;
+            case LINE:
+            {
+                cv::Mat kernel = cv::Mat::zeros(h, w, CV_8UC1);
+                const cv::Point center((w - 1) / 2, (h - 1) / 2);
+                const double rad = angle * CV_PI / 180.0;
+                const cv::Point2d dir(std::cos(rad), std::sin(rad));
+                const double half_len = static_cast<double>(std::max(w, h));
+                cv::Point p1(cvRound(center.x - dir.x * half_len), cvRound(center.y - dir.y * half_len));
+                cv::Point p2(cvRound(center.x + dir.x * half_len), cvRound(center.y + dir.y * half_len));
+                cv::clipLine(cv::Size(w, h), p1, p2);
+                cv::line(kernel, p1, p2, cv::Scalar(255), 1, cv::LINE_8);
+                morph_kernel_cache_ = kernel;
+                break;
+            }
+            case ELLIPSE:
+            default:
+                morph_kernel_cache_ = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(w, h), cv::Point(-1, -1));
+                break;
+        }
+
+        last_kernel_shape_ = shape;
+        last_kernel_w_ = w;
+        last_kernel_h_ = h;
+        last_kernel_angle_deg_ = angle;
+        morph_kernel_dirty_ = false;
+        return morph_kernel_cache_;
+    }
+
     cv::Mat Processor::setElement()
     {
-        return cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(binary_element_, binary_element_), cv::Point(-1, -1));
+        return buildMorphKernel();
     }
 
     void Processor::hsv2Binary()
@@ -362,7 +633,7 @@ namespace rm_radarplugin
         cv::cvtColor(this->raw_image_, hsv_image_, cv::COLOR_BGR2HSV);
         if (target_is_red_ == 1)
         {
-            cv::Mat h_binary_low, h_binary_high;
+            cv::UMat h_binary_low, h_binary_high;
             inRange(hsv_image_, cv::Scalar(red_h_min_low_, red_s_min_, red_v_min_), cv::Scalar(red_h_max_low_, red_s_max_, red_v_max_),
                     h_binary_low);
             inRange(hsv_image_, cv::Scalar(red_h_min_high_, red_s_min_, red_v_min_), cv::Scalar(red_h_max_high_, red_s_max_, red_v_max_),
@@ -395,13 +666,8 @@ namespace rm_radarplugin
 
     void Processor::imageProcess(cv_bridge::CvImagePtr &cv_image)
     {
-        raw_image_ = cv_image->image;
-        static int last_element_size = -1;
-        static cv::Mat element;
-        if (last_element_size != binary_element_) {
-            element = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(binary_element_, binary_element_), cv::Point(-1, -1));
-            last_element_size = binary_element_;
-        }
+        cv_image->image.copyTo(raw_image_);
+        const cv::Mat element = buildMorphKernel();
 
         switch (preprocess_method_)
         {
@@ -420,28 +686,28 @@ namespace rm_radarplugin
         switch (morph_type_)
         {
             case 0:
-                morphologyEx(binary_image_, morpro_image_, cv::MORPH_ERODE, element);
+                morphologyEx(binary_image_, morpro_image_, cv::MORPH_ERODE, element, cv::Point(-1, -1), morph_iterations_);
                 break;
             case 1:
-                morphologyEx(binary_image_, morpro_image_, cv::MORPH_DILATE, element);
+                morphologyEx(binary_image_, morpro_image_, cv::MORPH_DILATE, element, cv::Point(-1, -1), morph_iterations_);
                 break;
             case 2:
-                morphologyEx(binary_image_, morpro_image_, cv::MORPH_OPEN, element);
+                morphologyEx(binary_image_, morpro_image_, cv::MORPH_OPEN, element, cv::Point(-1, -1), morph_iterations_);
                 break;
             case 3:
-                morphologyEx(binary_image_, morpro_image_, cv::MORPH_CLOSE, element);
+                morphologyEx(binary_image_, morpro_image_, cv::MORPH_CLOSE, element, cv::Point(-1, -1), morph_iterations_);
                 break;
             case 4:
-                morphologyEx(binary_image_, morpro_image_, cv::MORPH_GRADIENT, element);
+                morphologyEx(binary_image_, morpro_image_, cv::MORPH_GRADIENT, element, cv::Point(-1, -1), morph_iterations_);
                 break;
             case 5:
-                morphologyEx(binary_image_, morpro_image_, cv::MORPH_TOPHAT, element);
+                morphologyEx(binary_image_, morpro_image_, cv::MORPH_TOPHAT, element, cv::Point(-1, -1), morph_iterations_);
                 break;
             case 6:
-                morphologyEx(binary_image_, morpro_image_, cv::MORPH_BLACKHAT, element);
+                morphologyEx(binary_image_, morpro_image_, cv::MORPH_BLACKHAT, element, cv::Point(-1, -1), morph_iterations_);
                 break;
             case 7:
-                morphologyEx(binary_image_, morpro_image_, cv::MORPH_HITMISS, element);
+                morphologyEx(binary_image_, morpro_image_, cv::MORPH_HITMISS, element, cv::Point(-1, -1), morph_iterations_);
                 break;
             case 8:
                 binary_image_.copyTo(morpro_image_);
@@ -484,7 +750,7 @@ namespace rm_radarplugin
     void Processor::findbars()
     {
         bars_.clear();
-        contours_.clear();  
+        contours_.clear();
         std::vector<std::vector<cv::Point>> contours;
         findContours(morpro_image_, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
         if(is_bar_debug_)
@@ -495,18 +761,17 @@ namespace rm_radarplugin
         for(size_t i=0; i<contours.size(); i++)
         {
             double area = contourArea(contours[i]);
-                if (area < 5) continue; 
-                contours_.push_back(contours[i]); 
-                rect = cv::minAreaRect(contours[i]);
-                ArmorColor bar_color = target_is_red_ ? ArmorColor::RED : ArmorColor::BLUE;
-                Bar bar(rect, contours[i], bar_color);
-                if (select_bar_ && !isValidBar(bar)) 
-                {
-                    continue;
-                }
-                
-                bars_.emplace_back(bar);
+            if (area < 5) continue;
+            contours_.push_back(contours[i]);
+            rect = cv::minAreaRect(contours[i]);
+            ArmorColor bar_color = target_is_red_ ? ArmorColor::RED : ArmorColor::BLUE;
+            Bar bar(rect, contours[i], bar_color);
+            if (select_bar_ && !isValidBar(bar))
+            {
+                continue;
             }
+            bars_.emplace_back(bar);
+        }
 
         if(is_bar_debug_)
         {
@@ -525,7 +790,10 @@ namespace rm_radarplugin
         {
             ROS_INFO("max_bars_ratio: %lf > %lf", max_bars_ratio_,
                      std::max(top_bar.length_len_, bottom_bar.length_len_) / std::min(top_bar.length_len_, bottom_bar.length_len_));
-            // ROS_INFO("distance: %lf > %lf > %lf ", bars_length * max_bars_distance_, distance, bars_length * min_bars_distance_);
+            ROS_INFO("min_bars_distance check: distance=%lf, min_limit=%lf",
+                     distance, lens * min_bars_distance_);
+            ROS_INFO("max_bars_distance check: distance=%lf, max_limit=%lf",
+                     distance, lens * max_bars_distance_);
             ROS_INFO("top_bar: (%f, %f)", top_bar.center_point_.x, top_bar.center_point_.y);
             ROS_INFO("bottom_bar: (%f, %f)", bottom_bar.center_point_.x, bottom_bar.center_point_.y);
             ROS_INFO("max_bars_angle: %lf > %lf", max_bars_angle_, bars_angle);
@@ -708,9 +976,12 @@ namespace rm_radarplugin
         rm_radar_msgs::DroneDetection best_target;
         bool has_best_target = false;
 
-        for(auto& armor : armors_)
+        for (size_t armor_idx = 0; armor_idx < armors_.size(); ++armor_idx)
         {
+            auto& armor = armors_[armor_idx];
             double distance2ImgCenter = sqrt((armor.center_.x - image_center_.x) * (armor.center_.x - image_center_.x) + (armor.center_.y - image_center_.y) * (armor.center_.y - image_center_.y));
+            const double raw_error_x = image_center_.x - armor.center_.x;
+            const double raw_error_y = image_center_.y - armor.center_.y;
 
             rm_radar_msgs::DroneDetection target;
             target.header = target_array_.header; 
@@ -727,8 +998,8 @@ namespace rm_radarplugin
             
             target.target_centroid_x = static_cast<uint32_t>(armor.center_.x);
             target.target_centroid_y = static_cast<uint32_t>(armor.center_.y);
-            target.error_x = image_center_.x - armor.center_.x;
-            target.error_y = image_center_.y - armor.center_.y;
+            target.error_x = raw_error_x;
+            target.error_y = raw_error_y;
             target.error_angle_yaw   = std::atan(target.error_x / fx_);
             target.error_angle_pitch = std::atan(target.error_y / fy_);
             
@@ -743,7 +1014,6 @@ namespace rm_radarplugin
 
         if (has_best_target)
         {
-
             target_pub_single_.publish(best_target);
         }
         

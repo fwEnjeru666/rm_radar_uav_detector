@@ -32,13 +32,32 @@ struct FilterParams {
     float radius_search = 0.3f;
     int min_neighbors = 3;
     
-    float ransac_distance_threshold = 0.3f;
+    // Unified plane-removal controls.
+    bool remove_planes = true;
+    float plane_distance_threshold = 0.3f;
+    int plane_max_iterations = 120;
+    int plane_max_planes = 3;
+    int plane_min_points = 120;
+    float plane_min_inlier_ratio = 0.08f;
+    int plane_fail_streak_threshold = 2;
+    int plane_fail_cooldown_frames = 20;
 };
 
 class CloudProcessor {
 public:
     using PointT = pcl::PointXYZ;
     using PointCloudPtr = pcl::PointCloud<PointT>::Ptr;
+
+    struct PlaneRemovalDebug {
+        PointCloudPtr plane_removed;
+
+        PlaneRemovalDebug()
+            : plane_removed(new pcl::PointCloud<PointT>) {}
+
+        void reset() {
+            plane_removed->clear();
+        }
+    };
     
     CloudProcessor() = default;
     ~CloudProcessor() = default;
@@ -46,10 +65,10 @@ public:
     void setParams(const FilterParams& params) { params_ = params; }
     const FilterParams& getParams() const { return params_; }
     
-    PointCloudPtr preprocess(const PointCloudPtr& cloud);
+    PointCloudPtr preprocess(const PointCloudPtr& cloud, PlaneRemovalDebug* plane_debug = nullptr);
     PointCloudPtr voxelFilter(const PointCloudPtr& cloud, float leaf_size);
     PointCloudPtr passthroughFilter(const PointCloudPtr& cloud);
-    PointCloudPtr removeGround(const PointCloudPtr& cloud);
+    PointCloudPtr removeGround(const PointCloudPtr& cloud, PlaneRemovalDebug* plane_debug = nullptr);
     PointCloudPtr radiusOutlierRemoval(const PointCloudPtr& cloud);
     
     PointCloudPtr extractInAABB(const PointCloudPtr& cloud,
@@ -64,6 +83,9 @@ public:
 
 private:
     FilterParams params_;
+    // Runtime state: avoid repeated stripping attempts when recent frames fail acceptance checks.
+    int plane_fail_streak_ = 0;
+    int plane_cooldown_frames_left_ = 0;
 };
 
 }  // namespace rm_radar_lidar_detector

@@ -10,6 +10,7 @@ Panels:
         - /AccumulatedCloud1
         - /DroneCloud1
         - /DetectionMarker1
+        - /TrackTargetMarker1
         - /Image1
       Splitter Ratio: 0.5147058963775635
     Tree Height: 108
@@ -121,6 +122,34 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz/PointCloud2
+      Color: 0; 170; 255
+      Color Transformer: FlatColor
+      Decay Time: 0.5
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: RemovedPlaneCloud
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.019999999552965164
+      Style: Flat Squares
+      Topic: /lidar_detector/removed_plane_cloud
+      Unreliable: false
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz/PointCloud2
       Color: 255; 255; 0
       Color Transformer: FlatColor
       Decay Time: 3
@@ -172,6 +201,14 @@ Visualization Manager:
       Enabled: true
       Marker Topic: /lidar_detector/detection_marker
       Name: DetectionMarker
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /lidar_detector/track_marker
+      Name: TrackTargetMarker
       Namespaces:
         {}
       Queue Size: 100

@@ -2,7 +2,6 @@
 
 namespace rm_radar_lidar_detector
 {
-
     std::vector<ClusterPoint> DynamicDetector::detect(
         const PointCloudPtr& cur_cloud,
         const PointCloudPtr& prev_cloud)
@@ -17,13 +16,16 @@ namespace rm_radar_lidar_detector
         // Build KdTree for previous cloud
         pcl::KdTreeFLANN<PointT> kdtree;
         kdtree.setInputCloud(prev_cloud);
+        dynamic_points.reserve(cur_cloud->size());
+        nn_indices_buffer_.clear();
+        nn_distances_buffer_.clear();
         
         // Find dynamic points (points in current cloud not present in previous)
         for (const auto& pt : cur_cloud->points) {
-            std::vector<int> indices;
-            std::vector<float> distances;
-            
-            if (kdtree.radiusSearch(pt, params_.distance_threshold, indices, distances) == 0) {
+            nn_indices_buffer_.clear();
+            nn_distances_buffer_.clear();
+
+            if (kdtree.radiusSearch(pt, params_.distance_threshold, nn_indices_buffer_, nn_distances_buffer_) == 0) {
                 // Point not found in previous cloud - dynamic point
                 // Filter by minimum Z
                 if (pt.z >= params_.min_z) {
@@ -52,13 +54,16 @@ namespace rm_radar_lidar_detector
         pcl::octree::OctreePointCloudSearch<PointT> octree(resolution);
         octree.setInputCloud(prev_cloud);
         octree.addPointsFromInputCloud();
+        dynamic_points.reserve(cur_cloud->size());
+        nn_indices_buffer_.clear();
+        nn_distances_buffer_.clear();
         
         // Find dynamic points
         for (const auto& pt : cur_cloud->points) {
-            std::vector<int> indices;
-            std::vector<float> distances;
-            
-            if (octree.radiusSearch(pt, params_.distance_threshold, indices, distances) == 0) {
+            nn_indices_buffer_.clear();
+            nn_distances_buffer_.clear();
+
+            if (octree.radiusSearch(pt, params_.distance_threshold, nn_indices_buffer_, nn_distances_buffer_) == 0) {
                 if (pt.z >= params_.min_z) {
                     dynamic_points.emplace_back(pt.x, pt.y, pt.z);
                 }

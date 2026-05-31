@@ -40,6 +40,8 @@ public:
 private:
     DynamicDetectorParams params_;
     size_t last_detection_count_ = 0;
+    std::vector<int> nn_indices_buffer_;
+    std::vector<float> nn_distances_buffer_;
 };
 
 }  // namespace rm_radar_lidar_detector

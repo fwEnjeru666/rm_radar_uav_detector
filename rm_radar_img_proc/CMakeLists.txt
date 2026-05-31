@@ -27,6 +27,7 @@ find_package(catkin REQUIRED
         rm_msgs
         camera_info_manager
         )
+find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d)
 
 
 ## System dependencies are found with CMake's conventions
@@ -140,6 +141,7 @@ catkin_package(
         rm_radar_msgs
         rm_msgs
         camera_info_manager
+        DEPENDS OpenCV
 )
 
 ###########
@@ -151,6 +153,7 @@ catkin_package(
 include_directories(
     include
     ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
         /rm_vision/vision_base/include
 )
 
@@ -185,6 +188,7 @@ add_library(${PROJECT_NAME}
 target_link_libraries(
         ${PROJECT_NAME}
         ${catkin_LIBRARIES}
+        ${OpenCV_LIBRARIES}
         ${InferenceEngine_LIBRARIES}
         ${ngraph_LIBRARIES}
 )

@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>rm_radar_cam_detector</name>
+  <version>0.0.0</version>
+  <description>The rm_radar_cam_detector package</description>
+
+  <maintainer email="enjeru@todo.todo">enjeru</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>cv_bridge</depend>
+  <depend>dynamic_reconfigure</depend>
+  <depend>image_transport</depend>
+  <depend>nodelet</depend>
+  <depend>rm_radar_msgs</depend>
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <export>
+    <nodelet plugin="${prefix}/rm_radar_cam_detector_plugin.xml" />
+  </export>
+</package>

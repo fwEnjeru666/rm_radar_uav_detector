@@ -19,13 +19,10 @@ struct ClusterFilterParams {
     double max_v = 10.0;
     double min_r = 0.1;
     double max_r = 10.0;
+    double min_pca_r = 1.0;
+    double max_pca_r = 10.0;
     float min_h = -3.0f;
     float max_h = 10.0f;
-    double score_weight_points = 0.45;
-    double score_weight_ratio = 0.20;
-    double score_weight_volume = 0.20;
-    double score_weight_height = 0.15;
-    double score_height_norm_span = 5.0;
 };
 
 struct ClusterDebugInfo {
@@ -35,6 +32,7 @@ struct ClusterDebugInfo {
     int point_count = 0;
     double volume = 0.0;
     double ratio = 0.0;
+    double pca_ratio = 0.0;
     double score = 0.0;
     Eigen::Vector4f centroid = Eigen::Vector4f::Zero();
     BBox3D bbox;
@@ -100,7 +98,13 @@ public:
      */
     static Eigen::Vector4f getCentroid(const PointCloudPtr& cluster);
 
+    /**
+     * @brief Compute PCA axis ratio sqrt(lambda_max/lambda_min)
+     */
+    static double getPcaRatio(const PointCloudPtr& cluster);
+
 private:
+    bool validateMetrics(int point_count, double volume, double ratio, double pca_ratio, float center_z) const;
     ClusterFilterParams params_;
 };
 

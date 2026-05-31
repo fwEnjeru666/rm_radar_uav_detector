@@ -400,7 +400,7 @@ namespace rm_radarplugin
                 target_frame_, header.frame_id, header.stamp, ros::Duration(0.005));
             tf2::doTransform(point_in, point_out, transform_stamped);
             if(debug_mode_) {
-                ROS_INFO_THROTTLE(1, "[Tracker] TF transf+++orm success: %s -> %s at t=%.3f",
+                ROS_INFO_THROTTLE(1, "[Tracker] TF transform success: %s -> %s at t=%.3f",
                     header.frame_id.c_str(), target_frame_.c_str(), header.stamp.toSec());
             }
         } 

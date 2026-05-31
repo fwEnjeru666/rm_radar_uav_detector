@@ -1,5 +1,7 @@
 #include "visualizer.h"
 
+#include <algorithm>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 
@@ -264,6 +266,7 @@ namespace rm_radar_lidar_detector
                 << " n=" << info.point_count
                 << " v=" << std::fixed << std::setprecision(2) << info.volume
                 << " r=" << std::fixed << std::setprecision(2) << info.ratio
+                << " p=" << std::fixed << std::setprecision(2) << info.pca_ratio
                 << " h=" << std::fixed << std::setprecision(2) << info.centroid.z()
                 << " s=" << std::fixed << std::setprecision(2) << info.score;
 
@@ -278,6 +281,229 @@ namespace rm_radar_lidar_detector
         }
 
         return marker_array;
+    }
+
+    visualization_msgs::Marker Visualizer::createDeleteMarker(
+        const std::string& frame_id,
+        const std::string& ns,
+        int id,
+        const ros::Time& stamp)
+    {
+        visualization_msgs::Marker marker;
+        marker.header.frame_id = frame_id;
+        marker.header.stamp = stamp;
+        marker.ns = ns;
+        marker.id = id;
+        marker.action = visualization_msgs::Marker::DELETE;
+        return marker;
+    }
+
+    visualization_msgs::Marker Visualizer::createTrackTargetSphereMarker(
+        const SingleTargetTracker::State& state,
+        bool has_track,
+        const std::string& frame_id,
+        int id,
+        const ros::Time& stamp,
+        double lifetime,
+        double sphere_scale)
+    {
+        visualization_msgs::Marker marker;
+        marker.header.frame_id = frame_id;
+        marker.header.stamp = stamp;
+        marker.ns = "track_target";
+        marker.id = id;
+        marker.type = visualization_msgs::Marker::SPHERE;
+        marker.lifetime = ros::Duration(lifetime);
+
+        if (!has_track)
+        {
+            marker.action = visualization_msgs::Marker::DELETE;
+            return marker;
+        }
+
+        marker.action = visualization_msgs::Marker::ADD;
+        marker.pose.position.x = state.position.x();
+        marker.pose.position.y = state.position.y();
+        marker.pose.position.z = state.position.z();
+        marker.pose.orientation.w = 1.0;
+        marker.scale.x = sphere_scale;
+        marker.scale.y = sphere_scale;
+        marker.scale.z = sphere_scale;
+        marker.color.r = 0.0f;
+        marker.color.g = 0.95f;
+        marker.color.b = 0.1f;
+        marker.color.a = 0.90f;
+        return marker;
+    }
+
+    visualization_msgs::Marker Visualizer::createTrackVelocityArrowMarker(
+        const SingleTargetTracker::State& state,
+        bool has_track,
+        const std::string& frame_id,
+        int id,
+        const ros::Time& stamp,
+        double lifetime,
+        double shaft_diameter,
+        double head_diameter,
+        double head_length,
+        double min_speed,
+        double length_scale,
+        double max_length)
+    {
+        visualization_msgs::Marker marker;
+        marker.header.frame_id = frame_id;
+        marker.header.stamp = stamp;
+        marker.ns = "track_target";
+        marker.id = id;
+        marker.type = visualization_msgs::Marker::ARROW;
+        marker.lifetime = ros::Duration(lifetime);
+
+        if (!has_track)
+        {
+            marker.action = visualization_msgs::Marker::DELETE;
+            return marker;
+        }
+
+        const float speed = state.velocity.norm();
+        if (speed <= static_cast<float>(min_speed))
+        {
+            marker.action = visualization_msgs::Marker::DELETE;
+            return marker;
+        }
+
+        marker.action = visualization_msgs::Marker::ADD;
+        marker.scale.x = shaft_diameter;
+        marker.scale.y = head_diameter;
+        marker.scale.z = head_length;
+        marker.color.r = 1.0f;
+        marker.color.g = 0.85f;
+        marker.color.b = 0.1f;
+        marker.color.a = 0.95f;
+
+        geometry_msgs::Point p0;
+        p0.x = state.position.x();
+        p0.y = state.position.y();
+        p0.z = state.position.z();
+        geometry_msgs::Point p1 = p0;
+        const float arrow_len = std::min(static_cast<float>(max_length), speed * static_cast<float>(length_scale));
+        p1.x += state.velocity.x() / speed * arrow_len;
+        p1.y += state.velocity.y() / speed * arrow_len;
+        p1.z += state.velocity.z() / speed * arrow_len;
+        marker.points.push_back(p0);
+        marker.points.push_back(p1);
+        return marker;
+    }
+
+    visualization_msgs::Marker Visualizer::createTrackTrajectoryMarker(
+        const SingleTargetTracker::State& state,
+        bool has_track,
+        bool publish_trajectory,
+        const std::string& frame_id,
+        int id,
+        const ros::Time& stamp,
+        double line_width,
+        float min_step,
+        size_t max_points,
+        std::deque<geometry_msgs::Point>& trajectory_points)
+    {
+        visualization_msgs::Marker marker;
+        marker.header.frame_id = frame_id;
+        marker.header.stamp = stamp;
+        marker.ns = "track_target";
+        marker.id = id;
+        marker.type = visualization_msgs::Marker::LINE_STRIP;
+        marker.lifetime = ros::Duration(0.0);
+
+        if (!publish_trajectory)
+        {
+            marker.action = visualization_msgs::Marker::DELETE;
+            trajectory_points.clear();
+            return marker;
+        }
+
+        if (!has_track)
+        {
+            marker.action = visualization_msgs::Marker::DELETE;
+            trajectory_points.clear();
+            return marker;
+        }
+
+        geometry_msgs::Point curr;
+        curr.x = state.position.x();
+        curr.y = state.position.y();
+        curr.z = state.position.z();
+
+        if (trajectory_points.empty())
+        {
+            trajectory_points.push_back(curr);
+        }
+        else
+        {
+            const auto& last = trajectory_points.back();
+            const float dx = static_cast<float>(curr.x - last.x);
+            const float dy = static_cast<float>(curr.y - last.y);
+            const float dz = static_cast<float>(curr.z - last.z);
+            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist >= min_step)
+            {
+                trajectory_points.push_back(curr);
+            }
+        }
+
+        while (trajectory_points.size() > max_points)
+        {
+            trajectory_points.pop_front();
+        }
+
+        marker.action = visualization_msgs::Marker::ADD;
+        marker.scale.x = line_width;
+        marker.color.r = 0.10f;
+        marker.color.g = 0.95f;
+        marker.color.b = 1.00f;
+        marker.color.a = 0.90f;
+        marker.points.assign(trajectory_points.begin(), trajectory_points.end());
+        return marker;
+    }
+
+    visualization_msgs::Marker Visualizer::createTrackSpeedTextMarker(
+        const SingleTargetTracker::State& state,
+        bool has_track,
+        const std::string& frame_id,
+        int id,
+        const ros::Time& stamp,
+        double lifetime,
+        float z_offset,
+        float text_scale)
+    {
+        visualization_msgs::Marker marker;
+        marker.header.stamp = stamp;
+        marker.header.frame_id = frame_id;
+        marker.ns = "track_text";
+        marker.id = id;
+        marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+        marker.lifetime = ros::Duration(lifetime);
+
+        if (!has_track)
+        {
+            marker.action = visualization_msgs::Marker::DELETE;
+            return marker;
+        }
+
+        marker.action = visualization_msgs::Marker::ADD;
+        marker.pose.position.x = state.position.x();
+        marker.pose.position.y = state.position.y();
+        marker.pose.position.z = state.position.z() + z_offset;
+        marker.pose.orientation.w = 1.0;
+        marker.scale.z = text_scale;
+        marker.color.r = 0.0f;
+        marker.color.g = 1.0f;
+        marker.color.b = 1.0f;
+        marker.color.a = 0.95f;
+
+        std::ostringstream ss;
+        ss << "v=" << std::fixed << std::setprecision(2) << static_cast<double>(state.velocity.norm()) << "m/s";
+        marker.text = ss.str();
+        return marker;
     }
 
     void Visualizer::broadcastTF(

@@ -131,6 +131,7 @@ catkin_package(
     geometry_msgs
     tf
     tf2_ros
+    rm_radar_msgs
   DEPENDS
     PCL
     OpenCV
@@ -157,6 +158,7 @@ add_library(${PROJECT_NAME}
   src/cloud_processor.cpp
   src/dynamic_detector.cpp
   src/cluster_filter.cpp
+  src/track.cpp
   src/visualizer.cpp
 )
 

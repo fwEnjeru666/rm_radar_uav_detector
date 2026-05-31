@@ -1,0 +1,22 @@
+laser_camera_calibrate:
+  enable: false
+  enable_sampling: false
+  sample_topic: /laser_camera_calibrate/laser_calib_extract
+  manual_bias_topic: /laser_camera_calibrate/manual_bias
+  status_topic: /laser_camera_calibrate/status
+
+  h_px_min: 4.0
+  h_px_max: 300.0
+
+  csv_path: /tmp/laser_camera_samples.csv
+  write_csv_header: true
+  flush_each_sample: false
+  min_sample_interval: 0.05
+  enforce_h_bin_sampling: true
+  h_bin_size_px: 6.0
+  max_samples_per_h_bin: 60
+  min_h_gap_px: 2.0
+  min_fit_samples: 30
+  min_fit_groups: 8
+  max_fit_rmse_x: 2.5
+  max_fit_rmse_y: 2.5

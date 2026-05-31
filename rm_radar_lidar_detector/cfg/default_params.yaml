@@ -8,21 +8,23 @@ cloud_topic: /livox/lidar
 detection_mode: 1
 distance_threshold: 0.3992
 eps: 0.5
-expansion_m: 0.5
 frame_id: livox_frame
 verbose_log: false
 publish_cluster_debug_markers: true
+publish_plane_debug_clouds: true
 accumulated_publish_divider: 2
 max_ratio: 12.87
 max_volume: 10.0
-min_n: 60
-max_n: 150
+min_n: 30
+max_n: 300
 min_v: 0.1
 max_v: 3.0
 min_r: 0.0
 max_r: 5.0
+min_pca_r: 1.0
+max_pca_r: 7.0
 min_h: 0.0
-max_h: 4.0
+max_h: 5.0
 minPts: 5
 min_neighbors: 5
 pass_x_max: 35.0
@@ -32,6 +34,35 @@ pass_y_min: -12.0
 pass_z_max: 6.0
 pass_z_min: -50.0
 radius_search: 0.5
-ransac_distance_threshold: 0.6965
 voxel_leaf_size: 0.1
 
+# Plane removal (unified)
+remove_planes: true
+plane_distance_threshold: 1.0
+plane_max_iterations: 120
+plane_min_inlier_ratio: 0.08
+plane_max_planes: 3
+plane_min_points: 400
+plane_fail_streak_threshold: 3
+plane_fail_cooldown_frames: 10
+
+# Consistency scoring (main tuning knobs)
+confidence_on: 0.68
+confidence_keep: 0.52
+lock_min_streak: 3
+gate_pos_base: 0.6
+gate_pos_range_k: 0.03
+
+# Single-target tracker
+track_enable: true
+publish_track_text: true
+publish_track_target_marker: true
+publish_track_trajectory: true
+track_gate_distance_m: 1.5
+track_max_lost_time_s: 0.3
+track_pos_alpha: 0.65
+track_vel_alpha: 0.45
+track_max_speed_mps: 15.0
+track_velocity_min_dt_s: 0.03
+track_predict_max_dt_s: 0.08
+track_miss_velocity_decay: 0.85

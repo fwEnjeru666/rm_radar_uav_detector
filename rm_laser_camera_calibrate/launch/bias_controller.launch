@@ -1,0 +1,28 @@
+<launch>
+  <arg name="bias_topic" default="/laser_camera_calibrate/bias"/>
+  <arg name="manual_bias_topic" default="/laser_camera_calibrate/manual_bias"/>
+  <arg name="init_bias_x" default="0.0"/>
+  <arg name="init_bias_y" default="0.0"/>
+  <arg name="step_x" default="1.0"/>
+  <arg name="step_y" default="1.0"/>
+  <arg name="step_scale" default="2.0"/>
+  <arg name="step_min" default="0.01"/>
+  <arg name="step_max" default="100.0"/>
+  <arg name="poll_hz" default="50.0"/>
+
+  <node pkg="rm_laser_camera_calibrate"
+        type="bias_controller.py"
+        name="bias_controller"
+        output="screen">
+    <param name="bias_topic" value="$(arg bias_topic)"/>
+    <param name="manual_bias_topic" value="$(arg manual_bias_topic)"/>
+    <param name="init_bias_x" value="$(arg init_bias_x)"/>
+    <param name="init_bias_y" value="$(arg init_bias_y)"/>
+    <param name="step_x" value="$(arg step_x)"/>
+    <param name="step_y" value="$(arg step_y)"/>
+    <param name="step_scale" value="$(arg step_scale)"/>
+    <param name="step_min" value="$(arg step_min)"/>
+    <param name="step_max" value="$(arg step_max)"/>
+    <param name="poll_hz" value="$(arg poll_hz)"/>
+  </node>
+</launch>

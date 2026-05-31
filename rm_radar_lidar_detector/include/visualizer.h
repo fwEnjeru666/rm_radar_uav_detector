@@ -5,6 +5,7 @@
 #include <visualization_msgs/MarkerArray.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <tf/transform_broadcaster.h>
+#include <geometry_msgs/Point.h>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -14,9 +15,11 @@
 #include <Eigen/Dense>
 #include <string>
 #include <vector>
+#include <deque>
 
 #include "types.h"
 #include "cluster_filter.h"
+#include "track.h"
 
 namespace rm_radar_lidar_detector
 {
@@ -82,6 +85,57 @@ class Visualizer {
             const ros::Time& stamp,
             double box_lifetime = 0.25,
             double text_lifetime = 0.25);
+
+        static visualization_msgs::Marker createDeleteMarker(
+            const std::string& frame_id,
+            const std::string& ns,
+            int id,
+            const ros::Time& stamp);
+
+        static visualization_msgs::Marker createTrackTargetSphereMarker(
+            const SingleTargetTracker::State& state,
+            bool has_track,
+            const std::string& frame_id,
+            int id,
+            const ros::Time& stamp,
+            double lifetime,
+            double sphere_scale);
+
+        static visualization_msgs::Marker createTrackVelocityArrowMarker(
+            const SingleTargetTracker::State& state,
+            bool has_track,
+            const std::string& frame_id,
+            int id,
+            const ros::Time& stamp,
+            double lifetime,
+            double shaft_diameter,
+            double head_diameter,
+            double head_length,
+            double min_speed,
+            double length_scale,
+            double max_length);
+
+        static visualization_msgs::Marker createTrackTrajectoryMarker(
+            const SingleTargetTracker::State& state,
+            bool has_track,
+            bool publish_trajectory,
+            const std::string& frame_id,
+            int id,
+            const ros::Time& stamp,
+            double line_width,
+            float min_step,
+            size_t max_points,
+            std::deque<geometry_msgs::Point>& trajectory_points);
+
+        static visualization_msgs::Marker createTrackSpeedTextMarker(
+            const SingleTargetTracker::State& state,
+            bool has_track,
+            const std::string& frame_id,
+            int id,
+            const ros::Time& stamp,
+            double lifetime,
+            float z_offset,
+            float text_scale);
         
         static void broadcastTF(const Eigen::Vector3f& position,
                                 const Eigen::Quaternionf& orientation,

@@ -3,6 +3,9 @@
 #include <iostream>
 #include <vector>
 #include <dirent.h>
+#include <array>
+#include <unordered_map>
+#include <fstream>
 #include <Eigen/Geometry>
 #include <opencv2/core/eigen.hpp>
 #include <cmath>
@@ -12,6 +15,7 @@
 #include <mutex>
 #include <numeric>
 #include <thread>
+#include <memory>
 #include <nodelet/nodelet.h>
 #include <pluginlib/class_loader.h>
 #include <pluginlib/class_list_macros.h>
@@ -46,7 +50,6 @@ namespace rm_radarplugin
         double pixel_contained_ratio_;
         ArmorColor color_;
         bool is_clockwise_;
-        int used_num_;
         std::vector<cv::Point> contour_;
 
         Bar(cv::RotatedRect bar_rect, const std::vector<cv::Point>& contour, ArmorColor color) : bar_rect_(std::move(bar_rect))
@@ -66,9 +69,11 @@ namespace rm_radarplugin
             }
             else
             {
-            angle_ = bar_rect_.angle;  
+            angle_ = bar_rect_.angle;
             is_clockwise_ = false;
             }
+            // Use an unsigned orientation (0~90 deg) to avoid +/-90 toggling.
+            angle_ = std::fabs(angle_);
             color_ = color;
         };
         };
@@ -355,6 +360,8 @@ namespace rm_radarplugin
 
 
         cv::Mat setElement();
+        cv::Mat buildMorphKernel();
+        static int sanitizeKernelSize(int value);
         void hsv2Binary();
         void bgr2Binary();
         void imageProcess(cv_bridge::CvImagePtr &cv_image) override;
@@ -419,7 +426,6 @@ namespace rm_radarplugin
             imageProcess(temp);
             findArmor();
             draw();
-            // Note: target_array_ is already published inside findArmor(), no need to publish again
         }
 
 
@@ -446,6 +452,18 @@ namespace rm_radarplugin
         /// morphology
         int morph_type_{};
         int binary_element_{};
+        int kernel_shape_{};
+        int kernel_w_{};
+        int kernel_h_{};
+        int kernel_angle_deg_{};
+        int morph_iterations_{1};
+
+        cv::Mat morph_kernel_cache_{};
+        bool morph_kernel_dirty_{true};
+        int last_kernel_shape_{-1};
+        int last_kernel_w_{-1};
+        int last_kernel_h_{-1};
+        int last_kernel_angle_deg_{-1};
 
         /// bar morphology
         std::vector<std::vector<cv::Point>> contours_{};
@@ -489,6 +507,7 @@ namespace rm_radarplugin
         /// draw
         DrawImage draw_type_{};
         int line_width_{};
+        bool show_centroid_only_{false};
 
         // Show FPS overlay (dynamic_reconfigure: Draw.cfg/show_fps)
         bool show_fps_{false};
@@ -507,15 +526,15 @@ namespace rm_radarplugin
         std::mutex obj_locker_;
 
 
-        cv::Mat raw_image_{};
+        cv::UMat raw_image_{};
         cv::Mat gray_image_{};
-        cv::Mat binary_image_{};
-        cv::Mat morpro_image_{};
+        cv::UMat binary_image_{};
+        cv::UMat morpro_image_{};
         cv::Mat debug_image_{};
-        cv::Mat hsv_image_{};
-        cv::Mat blue_channel_{};
-        cv::Mat green_channel_{};
-        cv::Mat red_channel_{};
+        cv::UMat hsv_image_{};
+        cv::UMat blue_channel_{};
+        cv::UMat green_channel_{};
+        cv::UMat red_channel_{};
 
 
         ///debuger

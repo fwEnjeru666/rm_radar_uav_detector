@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>rm_laser_camera_calibrate</name>
+  <version>0.0.0</version>
+  <description>Laser-camera optical bias sampling and regression utility for radar img proc.</description>
+
+  <maintainer email="enjeru@todo.todo">enjeru</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>dynamic_reconfigure</depend>
+  <depend>geometry_msgs</depend>
+  <depend>rospy</depend>
+  <depend>roscpp</depend>
+  <depend>rm_radar_msgs</depend>
+
+  <export/>
+</package>

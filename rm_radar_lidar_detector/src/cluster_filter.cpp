@@ -2,9 +2,43 @@
 
 #include <algorithm>
 #include <cmath>
+#include <Eigen/Eigenvalues>
 
 namespace rm_radar_lidar_detector
 {
+    namespace
+    {
+        constexpr double kInvalidBestScore = -1.0;
+        constexpr double kClampMin = 0.0;
+        constexpr double kClampMax = 1.0;
+        constexpr double kMinSpan = 1e-6;
+        constexpr double kMinDimEpsilon = 1e-3;
+        constexpr double kInvalidFlatRatio = 1000.0;
+        constexpr double kInvalidPcaRatio = 1000.0;
+        constexpr double kShapeWeightRatio = 0.45;
+        constexpr double kShapeWeightVolume = 0.35;
+        constexpr double kShapeWeightPca = 0.20;
+    }
+
+    bool ClusterFilter::validateMetrics(int point_count, double volume, double ratio, double pca_ratio, float center_z) const
+    {
+        if (point_count < params_.min_n || point_count > params_.max_n) {
+            return false;
+        }
+        if (volume < params_.min_v || volume > params_.max_v) {
+            return false;
+        }
+        if (ratio < params_.min_r || ratio > params_.max_r) {
+            return false;
+        }
+        if (pca_ratio < params_.min_pca_r || pca_ratio > params_.max_pca_r) {
+            return false;
+        }
+
+        const float min_h = std::min(params_.min_h, params_.max_h);
+        const float max_h = std::max(params_.min_h, params_.max_h);
+        return center_z >= min_h && center_z <= max_h;
+    }
 
     bool ClusterFilter::validate(
         const PointCloudPtr& cluster,
@@ -15,33 +49,12 @@ namespace rm_radar_lidar_detector
             return false;
         }
         
-        // Check point count
-        int point_count = static_cast<int>(cluster->size());
-        if (point_count < params_.min_n || point_count > params_.max_n) {
-            return false;
-        }
-        
-        // Check volume
-        double volume = getVolume(min_pt, max_pt);
-        if (volume < params_.min_v || volume > params_.max_v) {
-            return false;
-        }
-        
-        // Check ratio
-        double ratio = getRatio(min_pt, max_pt);
-        if (ratio < params_.min_r || ratio > params_.max_r) {
-            return false;
-        }
-        
-        // Check center Z
-        float center_z = (min_pt.z + max_pt.z) / 2.0f;
-        const float min_h = std::min(params_.min_h, params_.max_h);
-        const float max_h = std::max(params_.min_h, params_.max_h);
-        if (center_z < min_h || center_z > max_h) {
-            return false;
-        }
-        
-        return true;
+        const int point_count = static_cast<int>(cluster->size());
+        const double volume = getVolume(min_pt, max_pt);
+        const double ratio = getRatio(min_pt, max_pt);
+        const double pca_ratio = getPcaRatio(cluster);
+        const float center_z = 0.5f * (min_pt.z + max_pt.z);
+        return validateMetrics(point_count, volume, ratio, pca_ratio, center_z);
     }
 
     ClusterFilter::PointCloudPtr ClusterFilter::findBest(
@@ -51,7 +64,7 @@ namespace rm_radar_lidar_detector
         std::vector<ClusterDebugInfo>* debug_infos)
     {
         PointCloudPtr best_cluster = nullptr;
-        double best_score = -1.0;
+        double best_score = kInvalidBestScore;
         int best_cluster_index = -1;
 
         if (debug_infos) {
@@ -60,8 +73,26 @@ namespace rm_radar_lidar_detector
         }
 
         auto clamp01 = [](double v) {
-            return std::max(0.0, std::min(1.0, v));
+            return std::max(kClampMin, std::min(kClampMax, v));
         };
+
+        // Scoring only uses relatively stable object-shape terms:
+        // ratio (dimensionless) + volume.
+        // point_count/height are hard gates in validateMetrics().
+        const double min_r_safe = std::max(params_.min_r, kMinSpan);
+        const double max_r_safe = std::max(params_.max_r, min_r_safe + kMinSpan);
+        const double min_v_safe = std::max(params_.min_v, kMinSpan);
+        const double max_v_safe = std::max(params_.max_v, min_v_safe + kMinSpan);
+        const double min_pca_safe = std::max(params_.min_pca_r, kMinSpan);
+        const double max_pca_safe = std::max(params_.max_pca_r, min_pca_safe + kMinSpan);
+
+        // Use geometric center + log span, more robust than linear center.
+        const double log_r_mid = 0.5 * (std::log(min_r_safe) + std::log(max_r_safe));
+        const double log_r_half = std::max(kMinSpan, 0.5 * (std::log(max_r_safe) - std::log(min_r_safe)));
+        const double log_v_mid = 0.5 * (std::log(min_v_safe) + std::log(max_v_safe));
+        const double log_v_half = std::max(kMinSpan, 0.5 * (std::log(max_v_safe) - std::log(min_v_safe)));
+        const double log_pca_mid = 0.5 * (std::log(min_pca_safe) + std::log(max_pca_safe));
+        const double log_pca_half = std::max(kMinSpan, 0.5 * (std::log(max_pca_safe) - std::log(min_pca_safe)));
         
         for (size_t cluster_idx = 0; cluster_idx < clusters.size(); ++cluster_idx) {
             const auto& cluster = clusters[cluster_idx];
@@ -81,41 +112,26 @@ namespace rm_radar_lidar_detector
             info.bbox.update(min_pt, max_pt);
             info.volume = getVolume(min_pt, max_pt);
             info.ratio = getRatio(min_pt, max_pt);
+            info.pca_ratio = getPcaRatio(cluster);
 
             const double point_count = static_cast<double>(info.point_count);
             const double ratio = info.ratio;
             const double volume = info.volume;
-            const double center_z = static_cast<double>(min_pt.z + max_pt.z) * 0.5;
+            const double pca_ratio = info.pca_ratio;
+            const float center_z_f = 0.5f * (min_pt.z + max_pt.z);
+            (void)point_count;
 
-            const double point_den = std::max(1.0, static_cast<double>(params_.max_n - params_.min_n));
-            const double point_score = clamp01((point_count - static_cast<double>(params_.min_n)) / point_den);
-
-            const double ratio_mid = 0.5 * (params_.min_r + params_.max_r);
-            const double ratio_half = std::max(1e-6, 0.5 * (params_.max_r - params_.min_r));
-            const double ratio_score = clamp01(1.0 - std::abs(ratio - ratio_mid) / ratio_half);
-
-            const double vol_mid = 0.5 * (params_.min_v + params_.max_v);
-            const double vol_half = std::max(1e-6, 0.5 * (params_.max_v - params_.min_v));
-            const double volume_score = clamp01(1.0 - std::abs(volume - vol_mid) / vol_half);
-
-            const double height_norm = std::max(1e-6, params_.score_height_norm_span);
-            const double height_score = clamp01((center_z - static_cast<double>(params_.min_h)) / height_norm);
-
-            const double w_points = std::max(0.0, params_.score_weight_points);
-            const double w_ratio = std::max(0.0, params_.score_weight_ratio);
-            const double w_volume = std::max(0.0, params_.score_weight_volume);
-            const double w_height = std::max(0.0, params_.score_weight_height);
-            const double w_sum = std::max(1e-9, w_points + w_ratio + w_volume + w_height);
-
+            const double ratio_score = clamp01(1.0 - std::abs(std::log(std::max(ratio, kMinSpan)) - log_r_mid) / log_r_half);
+            const double volume_score = clamp01(1.0 - std::abs(std::log(std::max(volume, kMinSpan)) - log_v_mid) / log_v_half);
+            const double pca_score = clamp01(1.0 - std::abs(std::log(std::max(pca_ratio, kMinSpan)) - log_pca_mid) / log_pca_half);
             const double score =
-                (w_points * point_score +
-                 w_ratio * ratio_score +
-                 w_volume * volume_score +
-                 w_height * height_score) / w_sum;
+                kShapeWeightRatio * ratio_score +
+                kShapeWeightVolume * volume_score +
+                kShapeWeightPca * pca_score;
             info.score = score;
             
             // Validate cluster
-            if (!validate(cluster, min_pt, max_pt)) {
+            if (!validateMetrics(info.point_count, volume, ratio, pca_ratio, center_z_f)) {
                 info.valid = false;
                 if (debug_infos) {
                     debug_infos->push_back(info);
@@ -132,6 +148,7 @@ namespace rm_radar_lidar_detector
                 best_cluster = cluster;
                 best_cluster_index = static_cast<int>(cluster_idx);
                 best_bbox.update(min_pt, max_pt);
+                best_centroid = info.centroid;
             }
         }
 
@@ -142,10 +159,6 @@ namespace rm_radar_lidar_detector
                     break;
                 }
             }
-        }
-        
-        if (best_cluster && !best_cluster->empty()) {
-            best_centroid = getCentroid(best_cluster);
         }
         
         return best_cluster;
@@ -164,12 +177,14 @@ namespace rm_radar_lidar_detector
         double dx = max_pt.x - min_pt.x;
         double dy = max_pt.y - min_pt.y;
         double dz = max_pt.z - min_pt.z;
-        
-        if (dz < 0.001) {
-            return 100.0;  // Invalid ratio for flat objects
+
+        const double max_dim = std::max({dx, dy, dz});
+        const double min_dim = std::min({dx, dy, dz});
+        if (min_dim < kMinDimEpsilon)
+        {
+            return kInvalidFlatRatio;
         }
-        double ratio = (dx * dy) / dz;
-        return ratio;
+        return max_dim / min_dim;
     }
 
     Eigen::Vector4f ClusterFilter::getCentroid(const PointCloudPtr& cluster)
@@ -181,6 +196,33 @@ namespace rm_radar_lidar_detector
             centroid = Eigen::Vector4f::Zero();
         }
         return centroid;
+    }
+
+    double ClusterFilter::getPcaRatio(const PointCloudPtr& cluster)
+    {
+        if (!cluster || cluster->size() < 3)
+        {
+            return kInvalidPcaRatio;
+        }
+
+        Eigen::Matrix3f covariance = Eigen::Matrix3f::Zero();
+        Eigen::Vector4f centroid = Eigen::Vector4f::Zero();
+        if (pcl::computeMeanAndCovarianceMatrix(*cluster, covariance, centroid) <= 0)
+        {
+            return kInvalidPcaRatio;
+        }
+
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(covariance);
+        if (solver.info() != Eigen::Success)
+        {
+            return kInvalidPcaRatio;
+        }
+
+        // SelfAdjointEigenSolver returns ascending eigenvalues.
+        const auto eigenvalues = solver.eigenvalues();
+        const double lambda_min = std::max(kMinSpan, static_cast<double>(eigenvalues[0]));
+        const double lambda_max = std::max(lambda_min, static_cast<double>(eigenvalues[2]));
+        return std::sqrt(lambda_max / lambda_min);
     }
 
 }  // namespace rm_radar_lidar_detector
