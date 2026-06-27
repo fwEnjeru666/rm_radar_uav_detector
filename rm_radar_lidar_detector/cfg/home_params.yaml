@@ -1,34 +1,47 @@
 accumulated_publish_divider: 2
 aircraft_min_z: -3.0
 cloud_topic: /livox/lidar
+cloud_queue_size: 10
+drone_aabb_accumulation_max_points: 3000
+drone_aabb_accumulation_reset_distance: 0.25
 detection_mode: 1
 distance_threshold: 0.3992
-eps: 0.3
+eps: 0.2495
 frame_id: livox_frame
-min_n: 60
-max_n: 3000
-min_h: 0.0
+min_n: 1000
+max_n: 2000
+min_h: -6.0
 max_h: 4.0
 min_r: 0.1
 max_r: 5.0
 min_pca_r: 1.0
 max_pca_r: 6.0
-min_v: 1.0
+min_v: 0.29999699999999996
 max_v: 3.0
-minPts: 100
-
+minPts: 159
+target_cloud_min_support_points: 3
+target_cloud_height_window: 0.2
+target_point_smoothing_alpha: 1.0
+target_point_max_jump_distance: 0.8
+target_template_update_min_score: 0.75
+target_template_learning_rate: 0.10
+target_template_train_threshold: 0.45
+target_template_train_min_points: 3
 min_neighbors: 6
 
-pass_x_max: 130.0
-pass_x_min: -90.0
-pass_y_max: 160.0
-pass_y_min: -100.0
-pass_z_max: 6.0
-pass_z_min: -50.0
+pass_x_min: -10.0
+pass_x_max: 6.0
+pass_y_min: -10.0
+pass_y_max: 10.0
+pass_z_min: -10.0
+pass_z_max: 10.0
+
 publish_cluster_debug_markers: true
 publish_plane_debug_clouds: true
+publish_raw_drone_cloud: true
 radius_search: 0.5
 verbose_log: false
+enable_voxel_downsample: true
 voxel_leaf_size: 0.1
 
 # Plane removal (unified)
@@ -50,6 +63,7 @@ gate_pos_range_k: 0.03
 
 # Single-target tracker
 track_enable: true
+track_local_cluster_enable: true
 publish_track_text: true
 publish_track_target_marker: true
 publish_track_trajectory: true

@@ -2,7 +2,12 @@
 
 #include <Eigen/Dense>
 #include <ros/ros.h>
+#include <array>
 #include <limits>
+
+#include <geometry_msgs/Point.h>
+
+#include "types.h"
 
 namespace rm_radar_lidar_detector
 {
@@ -88,6 +93,9 @@ public:
     void reset();
     bool updateMeasurement(const Eigen::Vector3f& measurement, const ros::Time& stamp);
     void markMiss(const ros::Time& stamp);
+    bool updateAabbPoints(const BBox3D& bbox);
+    bool hasAabbPoints() const { return has_aabb_points_; }
+    const std::array<geometry_msgs::Point, 8>& aabbPoints() const { return aabb_points_; }
     AssociationResult updateAssociation(const Eigen::Vector3f* centroid,
                                         double ratio,
                                         double volume,
@@ -117,6 +125,8 @@ private:
     AssociationParams assoc_params_;
     AssociationState assoc_state_;
     State state_;
+    std::array<geometry_msgs::Point, 8> aabb_points_{};
+    bool has_aabb_points_ = false;
 };
 
 }  // namespace rm_radar_lidar_detector

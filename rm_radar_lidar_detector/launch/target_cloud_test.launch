@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Launch only the test detector. Play rosbag separately. -->
+    <arg name="detector_ns" default="lidar_detector_test"/>
+    <arg name="nodelet_manager" default="lidar_detector_test_manager"/>
+    <arg name="params_file" default="$(find rm_radar_lidar_detector)/cfg/default_params.yaml"/>
+    <arg name="cloud_topic" default="/livox/lidar"/>
+    <arg name="frame_id" default="livox_frame"/>
+    <arg name="extract_target_from_input_cloud" default="false"/>
+    <arg name="project_input_cloud_directly" default="false"/>
+    <arg name="track_local_cluster_enable" default="true"/>
+    <arg name="show_target_front_view" default="true"/>
+    <arg name="target_front_view_resolution" default="0.001"/>
+    <arg name="target_front_view_adaptive_resolution" default="false"/>
+    <arg name="target_front_view_resolution_scale" default="1.5"/>
+    <arg name="target_front_view_max_resolution" default="0.01"/>
+    <arg name="target_front_view_max_image_size" default="700"/>
+    <arg name="target_front_view_min_points" default="3"/>
+    <arg name="target_front_view_accumulation_frames" default="1"/>
+    <arg name="use_sim_time" default="true"/>
+    <arg name="play_bag" default="false"/>
+    <arg name="bag_file" default="/media/enjeru/KESU/2026-05-17-13-01-46.bag"/>
+
+    <param name="/use_sim_time" value="$(arg use_sim_time)"/>
+
+    <!-- Load params under the test namespace so recorded /lidar_detector topics do not conflict. -->
+    <rosparam command="load" file="$(arg params_file)" ns="$(arg detector_ns)"/>
+
+    <node pkg="nodelet"
+          type="nodelet"
+          name="$(arg nodelet_manager)"
+          args="manager"
+          output="screen"/>
+
+    <node pkg="nodelet"
+          type="nodelet"
+          name="$(arg detector_ns)"
+          args="load rm_radar_lidar_detector/LidarDetector $(arg nodelet_manager)"
+          output="screen">
+        <param name="cloud_topic" value="$(arg cloud_topic)"/>
+        <param name="frame_id" value="$(arg frame_id)"/>
+        <param name="extract_target_from_input_cloud" value="$(arg extract_target_from_input_cloud)"/>
+        <param name="project_input_cloud_directly" value="$(arg project_input_cloud_directly)"/>
+        <param name="track_local_cluster_enable" value="$(arg track_local_cluster_enable)"/>
+        <param name="show_target_front_view" value="$(arg show_target_front_view)"/>
+        <param name="target_front_view_resolution" value="$(arg target_front_view_resolution)"/>
+        <param name="target_front_view_adaptive_resolution" value="$(arg target_front_view_adaptive_resolution)"/>
+        <param name="target_front_view_resolution_scale" value="$(arg target_front_view_resolution_scale)"/>
+        <param name="target_front_view_max_resolution" value="$(arg target_front_view_max_resolution)"/>
+        <param name="target_front_view_max_image_size" value="$(arg target_front_view_max_image_size)"/>
+        <param name="target_front_view_min_points" value="$(arg target_front_view_min_points)"/>
+        <param name="target_front_view_accumulation_frames" value="$(arg target_front_view_accumulation_frames)"/>
+    </node>
+
+    <node pkg="rosbag"
+          type="play"
+          name="play_bag"
+          output="screen"
+          if="$(arg play_bag)"
+          args="--clock -l $(arg bag_file)"/>
+</launch>

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(rm_radar_cam_detector)
+project(rm_radar_uav_detector)
 
 add_compile_options(-std=c++14)
 
@@ -19,7 +19,7 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d)
 
 generate_dynamic_reconfigure_options(
-  cfg/CamDetector.cfg
+  cfg/UavDetector.cfg
 )
 
 catkin_package(
@@ -46,7 +46,9 @@ include_directories(
 )
 
 add_library(${PROJECT_NAME}
-  src/rm_radar_cam_detector.cpp
+  src/uav_detector_core.cpp
+  src/camera_detector.cpp
+  src/lidar_camera_fusion_detector.cpp
 )
 
 add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_gencfg ${catkin_EXPORTED_TARGETS})

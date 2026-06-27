@@ -1,0 +1,60 @@
+radar_imgProc:
+  detect_method: 1
+  enable_target_filter: true
+  model_config_path: "/home/enjeru/rm_ws/src/rm_radarplugin/rm_radar_img_proc/assets/yolo26/yolo26.yaml"
+
+  preprocess_condition:
+    target_color: 0
+    preprocess_method: 1
+
+    red_h_min_low: 0
+    red_h_max_low: 25
+    red_h_min_high: 156
+    red_h_max_high: 180
+    red_s_min: 43
+    red_s_max: 255
+    red_v_min: 150
+    red_v_max: 255
+
+    blue_h_min: 80
+    blue_h_max: 120
+    blue_s_min: 30
+    blue_s_max: 255
+    blue_v_min: 190
+    blue_v_max: 255
+
+    binary_thresh: 57
+    morph_type: 8
+    binary_element: 6
+    kernel_shape: 0
+    kernel_w: 0
+    kernel_h: 0
+    kernel_angle_deg: 90
+    morph_iterations: 1
+
+  armor_condition:
+    is_bar_debug: false
+    is_armor_debug: false
+    select_bar: 1
+    enable_target_filter: true
+    save_yolo_samples: false
+    max_angle_diff: 45.0
+    min_lw_ratio: 1.0
+    max_lw_ratio: 14.0
+    min_pixel_contained_ratio: 0.38
+    max_bars_ratio: 2.2
+    min_bars_distance: 0.25
+    max_bars_distance: 3.0
+    max_bars_angle: 18.0
+    max_bars_x_dis: 0.7
+    refine_max_brightness: 25.0
+    refine_roi_scale: 0.07
+    refine_search_start: 0.4
+    refine_search_end: 0.6
+
+  draw_condition:
+    draw_type: 1
+    line_width: 2
+    show_fps: true
+    show_centroid_only: false
+    show_all_armors: false

@@ -1,0 +1,19 @@
+<launch>
+  <arg name="image_topic" default="/hk_camera/image_raw"/>
+  <arg name="mode" default="manual"/>
+  <arg name="auto_save" default="true"/>
+  <arg name="output_path" default="$(find rm_radar_img_proc)/config/ref_pt_pos.yaml"/>
+  <arg name="launch_hk_camera" default="true"/>
+  <arg name="enable_imu_trigger" default="false"/>
+
+  <include file="$(find hk_camera)/launch/single_device.launch" if="$(arg launch_hk_camera)">
+    <arg name="enable_imu_trigger" value="$(arg enable_imu_trigger)"/>
+  </include>
+
+  <node pkg="rm_radar_img_proc" type="find_ref_pt" name="find_ref_pt" output="screen">
+    <param name="image_topic" value="$(arg image_topic)"/>
+    <param name="mode" value="$(arg mode)"/>
+    <param name="auto_save" value="$(arg auto_save)"/>
+    <param name="output_path" value="$(arg output_path)"/>
+  </node>
+</launch>

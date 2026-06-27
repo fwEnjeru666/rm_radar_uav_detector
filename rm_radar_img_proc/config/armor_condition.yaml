@@ -1,0 +1,21 @@
+radar_imgProc:
+  armor_condition:
+    is_bar_debug: false
+    is_armor_debug: false
+    select_bar: 1
+    enable_target_filter: true
+    save_yolo_samples: false
+    yolo_refine_enabled: false
+    max_angle_diff: 45.0
+    min_lw_ratio: 1.0
+    max_lw_ratio: 14.0
+    min_pixel_contained_ratio: 0.38
+    max_bars_ratio: 2.2
+    min_bars_distance: 0.25
+    max_bars_distance: 3.0
+    max_bars_angle: 18.0
+    max_bars_x_dis: 0.7
+    refine_max_brightness: 25.0
+    refine_roi_scale: 0.07
+    refine_search_start: 0.4
+    refine_search_end: 0.6

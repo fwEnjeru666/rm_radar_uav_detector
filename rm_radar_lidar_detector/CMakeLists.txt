@@ -158,6 +158,7 @@ add_library(${PROJECT_NAME}
   src/cloud_processor.cpp
   src/dynamic_detector.cpp
   src/cluster_filter.cpp
+  src/recognition.cpp
   src/track.cpp
   src/visualizer.cpp
 )

@@ -38,6 +38,8 @@ void SingleTargetTracker::reset()
 {
     assoc_state_ = AssociationState();
     state_ = State();
+    aabb_points_ = {};
+    has_aabb_points_ = false;
 }
 
 void SingleTargetTracker::setParams(const Params& params)
@@ -89,6 +91,35 @@ void SingleTargetTracker::predictTo(const ros::Time& stamp)
         state_.v_yaw = 0.0f;
         state_.accel = 0.0f;
     }
+}
+
+bool SingleTargetTracker::updateAabbPoints(const BBox3D& bbox)
+{
+    if (!bbox.valid)
+    {
+        return false;
+    }
+
+    const float min_x = bbox.min_pt.x();
+    const float min_y = bbox.min_pt.y();
+    const float min_z = bbox.min_pt.z();
+    const float max_x = bbox.max_pt.x();
+    const float max_y = bbox.max_pt.y();
+    const float max_z = bbox.max_pt.z();
+    const std::array<Eigen::Vector3f, 8> corners = {
+        Eigen::Vector3f(min_x, min_y, min_z), Eigen::Vector3f(max_x, min_y, min_z),
+        Eigen::Vector3f(max_x, max_y, min_z), Eigen::Vector3f(min_x, max_y, min_z),
+        Eigen::Vector3f(min_x, min_y, max_z), Eigen::Vector3f(max_x, min_y, max_z),
+        Eigen::Vector3f(max_x, max_y, max_z), Eigen::Vector3f(min_x, max_y, max_z)};
+
+    for (size_t point_index = 0; point_index < corners.size(); ++point_index)
+    {
+        aabb_points_[point_index].x = corners[point_index].x();
+        aabb_points_[point_index].y = corners[point_index].y();
+        aabb_points_[point_index].z = corners[point_index].z();
+    }
+    has_aabb_points_ = true;
+    return true;
 }
 
 bool SingleTargetTracker::updateMeasurement(const Eigen::Vector3f& measurement, const ros::Time& stamp)

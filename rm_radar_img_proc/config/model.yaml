@@ -1,0 +1,22 @@
+# Absolute path to the OpenVINO XML model.
+model: /home/dynamicx/rm_ws/src/rm_radarplugin/rm_radar_img_proc/assets/best2_openvino_model/best.xml
+
+# OpenVINO target device: AUTO / CPU / GPU / AUTO:CPU,GPU
+device: GPU
+
+# Optional cache directory for compiled OpenVINO blobs.
+openvino_cache_dir: 
+
+# Model input shape.
+input_width: 640
+input_height: 640
+
+# Detection thresholds.
+score_threshold: 0.40
+nms_threshold: 0.45
+
+# Number of classes exported by the model.
+class_num: 1
+
+# Whether to crop to a preset ROI before inference.
+use_roi: false

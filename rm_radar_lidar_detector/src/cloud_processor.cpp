@@ -1,5 +1,6 @@
 #include "cloud_processor.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -25,7 +26,8 @@ namespace rm_radar_lidar_detector
         PointCloudPtr filtered = passthroughFilter(cloud);
 
         // Voxel downsampling
-        PointCloudPtr downsampled = voxelFilter(filtered, params_.voxel_leaf);
+        PointCloudPtr downsampled = params_.enable_voxel_downsample ?
+            voxelFilter(filtered, params_.voxel_leaf) : filtered;
         
         // Ground removal
         PointCloudPtr no_ground = removeGround(downsampled, plane_debug);
@@ -241,6 +243,86 @@ namespace rm_radar_lidar_detector
         crop_box.filter(*result);
         
         return result;
+    }
+
+    CloudProcessor::PointCloudPtr CloudProcessor::updateAabbLocalAccumulation(
+        const PointCloudPtr& current_cloud,
+        const Eigen::Vector3f& center,
+        int max_points)
+    {
+        PointCloudPtr accumulated(new pcl::PointCloud<PointT>);
+        if (!current_cloud || current_cloud->empty())
+        {
+            return accumulated;
+        }
+
+        if (has_last_aabb_center_ && aabb_accumulation_reset_distance_ > 0.0f &&
+            (center - last_aabb_center_).norm() > aabb_accumulation_reset_distance_)
+        {
+            resetAabbLocalAccumulation();
+        }
+        last_aabb_center_ = center;
+        has_last_aabb_center_ = true;
+
+        PointCloudPtr local_cloud(new pcl::PointCloud<PointT>);
+        local_cloud->reserve(current_cloud->size());
+        for (const auto& point : current_cloud->points)
+        {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+            {
+                continue;
+            }
+            local_cloud->push_back(PointT(point.x - center.x(), point.y - center.y(), point.z - center.z()));
+        }
+        if (local_cloud->empty())
+        {
+            return accumulated;
+        }
+
+        aabb_local_queue_.push_back(local_cloud);
+        aabb_accumulated_point_count_ += local_cloud->size();
+        trimAabbLocalAccumulation(max_points);
+
+        accumulated->reserve(aabb_accumulated_point_count_);
+        for (const auto& local_frame : aabb_local_queue_)
+        {
+            if (!local_frame)
+            {
+                continue;
+            }
+            for (const auto& point : local_frame->points)
+            {
+                accumulated->push_back(PointT(point.x + center.x(), point.y + center.y(), point.z + center.z()));
+            }
+        }
+
+        accumulated->header = current_cloud->header;
+        accumulated->width = static_cast<uint32_t>(accumulated->size());
+        accumulated->height = 1;
+        accumulated->is_dense = false;
+        return accumulated;
+    }
+
+    void CloudProcessor::trimAabbLocalAccumulation(int max_points)
+    {
+        const auto max_point_count = static_cast<std::size_t>(std::max(100, max_points));
+        while (aabb_accumulated_point_count_ > max_point_count && !aabb_local_queue_.empty())
+        {
+            aabb_accumulated_point_count_ -= aabb_local_queue_.front()->size();
+            aabb_local_queue_.pop_front();
+        }
+    }
+
+    void CloudProcessor::resetAabbLocalAccumulation()
+    {
+        aabb_local_queue_.clear();
+        aabb_accumulated_point_count_ = 0;
+        has_last_aabb_center_ = false;
+    }
+
+    void CloudProcessor::setAabbLocalAccumulationResetDistance(float reset_distance)
+    {
+        aabb_accumulation_reset_distance_ = std::max(0.0f, reset_distance);
     }
 
     void CloudProcessor::accumulateClouds(

@@ -29,14 +29,19 @@ enum class DrawImage
   ARMORS_VERTEXS = 6,
   BARS_ARMORS = 7,
   WARP = 8,
-  PROJECT = 9,
-  TRACKER = 10
+  PROJECT = 9
 };
 
 enum PreProcessMethod
 {
   HSV = 0,
   SINGLE_CHANNEL = 1
+};
+
+enum DetectMethod
+{
+  TRADITIONAL = 0,
+  YOLO = 1
 };
 
 enum MorphType

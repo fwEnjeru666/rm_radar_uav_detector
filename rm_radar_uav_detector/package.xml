@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>rm_radar_cam_detector</name>
+  <name>rm_radar_uav_detector</name>
   <version>0.0.0</version>
-  <description>The rm_radar_cam_detector package</description>
+  <description>The rm_radar_uav_detector package</description>
 
   <maintainer email="enjeru@todo.todo">enjeru</maintainer>
   <license>TODO</license>
@@ -21,6 +21,6 @@
   <depend>tf2_ros</depend>
 
   <export>
-    <nodelet plugin="${prefix}/rm_radar_cam_detector_plugin.xml" />
+    <nodelet plugin="${prefix}/rm_radar_uav_detector_plugin.xml" />
   </export>
 </package>

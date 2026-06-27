@@ -5,6 +5,7 @@
 #include <pcl/common/common.h>
 #include <pcl/common/centroid.h>
 
+#include <Eigen/Dense>
 #include <vector>
 
 #include "types.h"
@@ -106,6 +107,40 @@ public:
 private:
     bool validateMetrics(int point_count, double volume, double ratio, double pca_ratio, float center_z) const;
     ClusterFilterParams params_;
+};
+
+struct CandidateSelectionContext
+{
+    bool use_track_position = false;
+    Eigen::Vector3f track_position = Eigen::Vector3f::Zero();
+    float track_gate_distance = 0.05f;
+    double shape_weight = 0.35;
+    double temporal_weight = 0.65;
+};
+
+struct CandidateSelectionResult
+{
+    bool found = false;
+    ClusterDebugInfo info;
+    double second_score = -1.0;
+    int valid_count = 0;
+};
+
+class CandidateSelector
+{
+public:
+    using ClusterMap = ClusterFilter::ClusterMap;
+
+    CandidateSelectionResult select(const ClusterMap& clusters,
+                                    std::vector<ClusterDebugInfo>& debug_infos,
+                                    const CandidateSelectionContext& context) const;
+
+private:
+    CandidateSelectionResult selectByShape(std::vector<ClusterDebugInfo>& debug_infos) const;
+    CandidateSelectionResult selectByTrackPosition(const ClusterMap& clusters,
+                                                   std::vector<ClusterDebugInfo>& debug_infos,
+                                                   const CandidateSelectionContext& context) const;
+    static double clamp01(double value);
 };
 
 }  // namespace rm_radar_lidar_detector

@@ -1,0 +1,5 @@
+<library path="lib/librm_radar_uav_detector">
+  <class name="rm_radar_uav_detector/UavDetectorCore" type="rm_radarplugin::UavDetectorCore" base_class_type="nodelet::Nodelet">
+    <description>Project tracked radar AABB onto camera image</description>
+  </class>
+</library>

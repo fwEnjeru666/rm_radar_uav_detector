@@ -225,4 +225,124 @@ namespace rm_radar_lidar_detector
         return std::sqrt(lambda_max / lambda_min);
     }
 
+
+CandidateSelectionResult CandidateSelector::select(const ClusterMap& clusters,
+                                                   std::vector<ClusterDebugInfo>& debug_infos,
+                                                   const CandidateSelectionContext& context) const
+{
+    if (context.use_track_position)
+    {
+        return selectByTrackPosition(clusters, debug_infos, context);
+    }
+    return selectByShape(debug_infos);
+}
+
+CandidateSelectionResult CandidateSelector::selectByShape(std::vector<ClusterDebugInfo>& debug_infos) const
+{
+    CandidateSelectionResult result;
+    double best_score = -1.0;
+
+    for (const auto& info : debug_infos)
+    {
+        if (!info.valid)
+        {
+            continue;
+        }
+
+        ++result.valid_count;
+        if (info.is_best || info.score > best_score)
+        {
+            if (result.found)
+            {
+                result.second_score = std::max(result.second_score, best_score);
+            }
+            result.info = info;
+            best_score = info.score;
+            result.found = true;
+        }
+        else
+        {
+            result.second_score = std::max(result.second_score, info.score);
+        }
+    }
+
+    return result;
+}
+
+CandidateSelectionResult CandidateSelector::selectByTrackPosition(const ClusterMap& clusters,
+                                                                  std::vector<ClusterDebugInfo>& debug_infos,
+                                                                  const CandidateSelectionContext& context) const
+{
+    CandidateSelectionResult result;
+    const float gate = std::max(0.05f, context.track_gate_distance);
+    const double shape_weight = std::max(0.0, context.shape_weight);
+    const double temporal_weight = std::max(0.0, context.temporal_weight);
+    const double weight_sum = std::max(1e-6, shape_weight + temporal_weight);
+    const double normalized_shape_weight = shape_weight / weight_sum;
+    const double normalized_temporal_weight = temporal_weight / weight_sum;
+    double selected_combined_score = -1.0;
+
+    for (auto& info : debug_infos)
+    {
+        info.is_best = false;
+        if (!info.valid)
+        {
+            continue;
+        }
+
+        ++result.valid_count;
+        if (info.cluster_index < 0 || info.cluster_index >= static_cast<int>(clusters.size()) ||
+            !clusters[info.cluster_index] || clusters[info.cluster_index]->empty())
+        {
+            continue;
+        }
+
+        const Eigen::Vector3f centroid(info.centroid.x(), info.centroid.y(), info.centroid.z());
+        const double normalized_distance = static_cast<double>((centroid - context.track_position).norm()) /
+                                           static_cast<double>(gate);
+        const double temporal_score = clamp01(1.0 - normalized_distance);
+        const double combined_score = normalized_shape_weight * clamp01(info.score) +
+                                      normalized_temporal_weight * temporal_score;
+
+        if (combined_score > selected_combined_score)
+        {
+            if (result.found)
+            {
+                result.second_score = std::max(result.second_score, selected_combined_score);
+            }
+            result.info = info;
+            selected_combined_score = combined_score;
+            result.found = true;
+        }
+        else
+        {
+            result.second_score = std::max(result.second_score, combined_score);
+        }
+    }
+
+    if (!result.found)
+    {
+        return result;
+    }
+
+    result.info.is_best = true;
+    result.info.score = selected_combined_score;
+    for (auto& info : debug_infos)
+    {
+        if (info.valid && info.cluster_index == result.info.cluster_index)
+        {
+            info.is_best = true;
+            break;
+        }
+    }
+
+    return result;
+}
+
+double CandidateSelector::clamp01(double value)
+{
+    return std::max(0.0, std::min(1.0, value));
+}
+
+
 }  // namespace rm_radar_lidar_detector

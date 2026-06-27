@@ -1,26 +1,37 @@
 <launch>
-  <arg name="image_topic" default="/hk_camera_left/image_raw" />
+  <!-- Input/output topics. -->
+  <arg name="image_topic" default="/hk_camera_right/image_raw" />
   <arg name="track_topic" default="/lidar_detector/lidar_track" />
-  <arg name="roi_topic" default="/rm_radar_cam_detector/roi_image" />
+  <arg name="image_detection_topic" default="/right_camera_Processor/processor/single_result_msg" />
+  <arg name="roi_topic" default="/rm_radar_uav_detector/roi_image" />
+  <arg name="uav_detection_topic" default="/rm_radar_uav_detector/uav_detection" />
+
+  <!-- Visualization and ROI controls. -->
   <arg name="expand_ratio" default="0.0" />
   <arg name="debug_mode" default="false" />
   <arg name="disable" default="false" />
   <arg name="draw_bbox" default="true" />
   <arg name="draw_roi" default="true" />
+
+  <!-- Calibration and synchronization tolerances. -->
   <arg name="pixel_bias_u" default="0.0" />
   <arg name="pixel_bias_v" default="0.0" />
+  <arg name="image_detection_timeout_s" default="0.5" />
+  <arg name="point_match_max_pixel_distance" default="8.0" />
   <arg name="fixed_frame" default="base_link" />
 
-  <node pkg="nodelet" type="nodelet" name="rm_radar_cam_detector_manager" args="manager" output="screen" />
+  <node pkg="nodelet" type="nodelet" name="rm_radar_uav_detector_manager" args="manager" output="screen" />
 
   <node pkg="nodelet"
         type="nodelet"
-        name="rm_radar_cam_detector"
-        args="load rm_radar_cam_detector/CamDetector rm_radar_cam_detector_manager"
+        name="rm_radar_uav_detector"
+        args="load rm_radar_uav_detector/UavDetectorCore rm_radar_uav_detector_manager"
         output="screen">
     <param name="image_topic" value="$(arg image_topic)" />
     <param name="track_topic" value="$(arg track_topic)" />
+    <param name="image_detection_topic" value="$(arg image_detection_topic)" />
     <param name="roi_topic" value="$(arg roi_topic)" />
+    <param name="uav_detection_topic" value="$(arg uav_detection_topic)" />
     <param name="debug_mode" value="$(arg debug_mode)" />
     <param name="timeout_s" value="0.2" />
     <param name="tf_timeout_s" value="0.02" />
@@ -31,6 +42,8 @@
     <param name="expand_ratio" value="$(arg expand_ratio)" />
     <param name="pixel_bias_u" value="$(arg pixel_bias_u)" />
     <param name="pixel_bias_v" value="$(arg pixel_bias_v)" />
+    <param name="image_detection_timeout_s" value="$(arg image_detection_timeout_s)" />
+    <param name="point_match_max_pixel_distance" value="$(arg point_match_max_pixel_distance)" />
     <param name="fixed_frame" value="$(arg fixed_frame)" />
   </node>
 </launch>

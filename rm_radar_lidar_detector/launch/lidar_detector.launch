@@ -9,6 +9,7 @@
     <arg name="params_file" default="$(find rm_radar_lidar_detector)/cfg/default_params.yaml"/>
     
     <!-- Filter parameters -->
+    <arg name="enable_voxel_downsample" default="true"/>
     <arg name="voxel_leaf_size" default="0.1"/>
     <arg name="pass_x_min" default="0.0"/>
     <arg name="pass_x_max" default="35.0"/>
@@ -38,6 +39,17 @@
     
     <!-- Detection mode: 0=Dynamic (fast), 1=Direct -->
     <arg name="detection_mode" default="0"/>
+    <arg name="track_local_cluster_enable" default="true"/>
+
+    <!-- OpenCV target front-view debug window -->
+    <arg name="show_target_front_view" default="true"/>
+    <arg name="target_front_view_resolution" default="0.001"/>
+    <arg name="target_front_view_adaptive_resolution" default="false"/>
+    <arg name="target_front_view_resolution_scale" default="1.5"/>
+    <arg name="target_front_view_max_resolution" default="0.01"/>
+    <arg name="target_front_view_max_image_size" default="700"/>
+    <arg name="target_front_view_min_points" default="3"/>
+    <arg name="target_front_view_accumulation_frames" default="1"/>
     
     <!-- 在节点启动前加载参数文件 (标准YAML格式) -->
     <rosparam command="load" file="$(arg params_file)" ns="lidar_detector" />
@@ -50,6 +62,16 @@
           args="load rm_radar_lidar_detector/LidarDetector $(arg nodelet_manager)" output="screen">
         <param name="cloud_topic" value="$(arg cloud_topic)"/>
         <param name="frame_id" value="$(arg frame_id)"/>
+        <param name="enable_voxel_downsample" value="$(arg enable_voxel_downsample)"/>
+        <param name="track_local_cluster_enable" value="$(arg track_local_cluster_enable)"/>
+        <param name="show_target_front_view" value="$(arg show_target_front_view)"/>
+        <param name="target_front_view_resolution" value="$(arg target_front_view_resolution)"/>
+        <param name="target_front_view_adaptive_resolution" value="$(arg target_front_view_adaptive_resolution)"/>
+        <param name="target_front_view_resolution_scale" value="$(arg target_front_view_resolution_scale)"/>
+        <param name="target_front_view_max_resolution" value="$(arg target_front_view_max_resolution)"/>
+        <param name="target_front_view_max_image_size" value="$(arg target_front_view_max_image_size)"/>
+        <param name="target_front_view_min_points" value="$(arg target_front_view_min_points)"/>
+        <param name="target_front_view_accumulation_frames" value="$(arg target_front_view_accumulation_frames)"/>
     </node>
 
     <!-- Use simulation time for rosbag playback -->

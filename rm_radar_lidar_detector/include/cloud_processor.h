@@ -27,6 +27,7 @@ struct FilterParams {
     float pass_z_min = -50.0f;
     float pass_z_max = 7.0f;
     
+    bool enable_voxel_downsample = true;
     float voxel_leaf = 0.05f;
     
     float radius_search = 0.3f;
@@ -75,6 +76,13 @@ public:
                                 const pcl::PointXYZ& min_pt,
                                 const pcl::PointXYZ& max_pt,
                                 float expansion = 0.0f);
+
+    PointCloudPtr updateAabbLocalAccumulation(const PointCloudPtr& current_cloud,
+                                              const Eigen::Vector3f& center,
+                                              int max_points);
+    void trimAabbLocalAccumulation(int max_points);
+    void resetAabbLocalAccumulation();
+    void setAabbLocalAccumulationResetDistance(float reset_distance);
     
     static void accumulateClouds(std::deque<PointCloudPtr>& queue,
                                  const PointCloudPtr& input,
@@ -83,6 +91,11 @@ public:
 
 private:
     FilterParams params_;
+    std::deque<PointCloudPtr> aabb_local_queue_;
+    std::size_t aabb_accumulated_point_count_ = 0;
+    Eigen::Vector3f last_aabb_center_ = Eigen::Vector3f::Zero();
+    bool has_last_aabb_center_ = false;
+    float aabb_accumulation_reset_distance_ = 0.25f;
     // Runtime state: avoid repeated stripping attempts when recent frames fail acceptance checks.
     int plane_fail_streak_ = 0;
     int plane_cooldown_frames_left_ = 0;
